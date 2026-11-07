@@ -1,0 +1,13 @@
+# Only overrides are listed here; everything else uses SearXNG's defaults.
+use_default_settings: true
+
+server:
+  # The secret comes from SEARXNG_SECRET in docker-compose.yml.
+  limiter: false
+  image_proxy: false
+
+search:
+  # JSON is off by default and the web_search tool needs it.
+  formats:
+    - html
+    - json

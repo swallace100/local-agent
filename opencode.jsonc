@@ -1,0 +1,47 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/agent",
+  "small_model": "ollama/agent",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": { "baseURL": "http://127.0.0.1:11434/v1" },
+      "models": {
+        "agent": {
+          "name": "Qwen 3.5 9B (32K context)",
+          "tool_call": true,
+          // Keep context in sync with num_ctx in ollama/Modelfile.
+          "limit": { "context": 32768, "output": 4096 }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "web": {
+      "type": "local",
+      "command": ["node", "tools/web-search/server.mjs"],
+      "enabled": true
+    }
+  },
+  "agent": {
+    // The global edit rule below would otherwise make plan mode writable.
+    "plan": { "permission": { "edit": "deny" } }
+  },
+  // Commands run on your machine, so they always ask first.
+  // Last matching rule wins.
+  "permission": {
+    "read": { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+    "glob": "allow",
+    "grep": "allow",
+    "edit": "allow",
+    "web_*": "allow",
+    // web_read_page returns far less text than webfetch and blocks private addresses.
+    "webfetch": "deny",
+    // Skills and subagents add tokens this model can't spare.
+    "skill": "deny",
+    "task": "deny",
+    "bash": "ask",
+    "external_directory": "ask"
+  }
+}

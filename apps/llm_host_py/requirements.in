@@ -1,6 +1,0 @@
-fastapi>=0.117.1
-uvicorn[standard]>=0.37
-transformers>=4.56.2
-peft>=0.17.1
-bitsandbytes>=0.47.0
-torch>=2.8.0

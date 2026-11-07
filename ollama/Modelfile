@@ -1,0 +1,5 @@
+# Creates the "agent" model: Qwen 3.5 9B with a context window large enough
+# for agent work. Rebuild after editing:
+#   ollama create agent -f ollama/Modelfile
+FROM qwen3.5:9b
+PARAMETER num_ctx 32768

@@ -1,3 +1,0 @@
-{"instruction":"Choose the best tool and explain why.","input":"User: 'Check if I’m free at 3 pm Friday.' Tools: [calendar.read, search.web, email.send]","output":"Use calendar.read. Rationale: direct availability check; web and email don’t expose personal schedule."}
-{"instruction":"Choose the best tool and explain why.","input":"User: 'Summarize this URL.' Tools: [browser.fetch, email.send]","output":"Use browser.fetch to retrieve and parse page content; email is unrelated."}
-{"instruction":"Choose the best tool and explain why.","input":"User: 'Book a table for two near Ebisu.' Tools: [maps.find, calendar.read, reservations.api]","output":"Start with maps.find to shortlist candidates, then reservations.api to place booking. calendar.read only for conflict checks."}

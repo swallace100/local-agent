@@ -1,69 +1,22 @@
-# === Python ===
-__pycache__/
-*.py[cod]
-*$py.class
-.venv*/
-.uv/
-*.pyo
-*.pyd
-*.so
-*.egg
-*.egg-info/
-.eggs/
-.Python
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-.pyre/
-.pytype/
-coverage.*
-htmlcov/
-.tox/
-.dmypy.json
-.dmypy/
-.ipynb_checkpoints/
-
-# === Node / JS ===
-node_modules/
-dist/
-.npm/
-.pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-package-lock.json
-npm-debug.log*
-
-# === Environment / secrets ===
+# Environment and secrets
 .env
 .env.*
 !.env.example
 
-# === Editor / IDE ===
+# Node
+node_modules/
+
+# OpenCode's generated plugin files (agents/ is tracked)
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/.gitignore
+
+# Editor and OS
 .DS_Store
+.idea/
+.vscode/
 *.swp
 *.swo
-.vscode/
-.idea/
 
-# === Docker ===
-*.pid
-*.seed
-*.pid.lock
-.docker/
-docker-compose.override.yml
-# ignore local volumes if they’re ever created
-docker_volumes/
-
-# === Logs ===
+# Logs
 *.log
-logs/
-*.out
-*.err
-
-# === Misc ===
-# Byte-compiled Jupyter notebooks
-*.nbconvert.ipynb
-
-# === LLM ===
-.hf_cache
