@@ -1,0 +1,30 @@
+[project]
+name = "local-agent"
+version = "0.1.0"
+description = "Unattended local agent with LangGraph, RAG, and web research"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.0",
+    "langchain-chroma>=1.1",
+    "langchain-ollama>=1.1",
+    "langchain-text-splitters>=1.1",
+    "langgraph>=1.2",
+    "langgraph-checkpoint-sqlite>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1"]
+
+[project.scripts]
+agent = "agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
