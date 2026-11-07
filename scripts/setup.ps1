@@ -1,5 +1,5 @@
 # Sets up the local agent. Safe to run again after changing the config.
-# Prerequisites: Docker Desktop, Node.js and Ollama (winget install Ollama.Ollama).
+# Prerequisites: Docker Desktop, Node.js, Python 3.11+ and Ollama (winget install Ollama.Ollama).
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
@@ -39,6 +39,20 @@ Write-Host "Starting SearXNG..."
 docker compose up -d
 if ($LASTEXITCODE -ne 0) { throw "Could not start SearXNG. Is Docker Desktop running?" }
 
+Write-Host "Installing the LangGraph agent..."
+& $ollama pull nomic-embed-text
+if ($LASTEXITCODE -ne 0) { throw "Embedding model download failed" }
+docker pull python:3.13-slim
+if ($LASTEXITCODE -ne 0) { throw "Sandbox image download failed" }
+if (-not (Test-Path ".venv\Scripts\python.exe")) {
+    python -m venv .venv
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the Python environment. Python 3.11+ is required." }
+}
+& .venv\Scripts\python.exe -m pip install --quiet --disable-pip-version-check -e ".[dev]"
+if ($LASTEXITCODE -ne 0) { throw "Python install failed" }
+& .venv\Scripts\agent.exe index
+if ($LASTEXITCODE -ne 0) { throw "Indexing the knowledge folder failed" }
+
 # Install the config globally so the agent works in any project folder.
 $globalDir = Join-Path $HOME ".config\opencode"
 $agentsDir = Join-Path $globalDir "agents"
@@ -56,5 +70,6 @@ $config = (Get-Content "opencode.jsonc" -Raw).Replace('"tools/web-search/server.
 Copy-Item ".opencode\agents\*.md" $agentsDir -Force
 
 Write-Host ""
-Write-Host "Ready. Open any project folder and run: opencode"
-Write-Host "Press Tab inside OpenCode to switch between build, plan, research and writer."
+Write-Host "Ready."
+Write-Host "Unattended agent: .venv\Scripts\agent.exe run `"your task`""
+Write-Host "Interactive agent: open any project folder and run opencode"

@@ -1,70 +1,162 @@
 # Local AI Agent
 
-A private agent that runs on your own GPU. It can research on the web, write articles, and work on code.
+A private agent that runs on your own GPU. It can research on the web, search your own notes, write articles, and work on code, with no API costs.
 
-It combines [OpenCode](https://opencode.ai) (the agent), [Ollama](https://ollama.com) with one local model, and a self-hosted [SearXNG](https://docs.searxng.org) instance for web search. There are no API costs.
+It includes two agents that share one local model and the same web tools:
+
+| | Unattended agent | Interactive agent |
+|---|---|---|
+| Use it for | Handing off a task and coming back to the result | Working alongside it in a terminal |
+| Built with | [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview), in [agent/](agent/) | [OpenCode](https://opencode.ai), configured in [opencode.jsonc](opencode.jsonc) |
+| Searches your notes | Yes | No |
+| Runs commands | In a Docker sandbox with no network | On your machine, after asking you |
+| Changes your code | No. It works on a copy and gives you a patch | Yes, directly |
+
+Both use [Ollama](https://ollama.com) to run Qwen 3.5 9B locally, and a self-hosted [SearXNG](https://docs.searxng.org) instance for web search.
 
 ## Setup
 
-You need Docker Desktop, Node.js, and Ollama (`winget install Ollama.Ollama`). Start Docker Desktop, then run:
+You need Docker Desktop, Node.js, Python 3.11 or later, and Ollama (`winget install Ollama.Ollama`). Start Docker Desktop, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 ```
 
-The script downloads the model (about 6.6 GB), starts SearXNG, and installs the agent's config so that it works in any folder. It's safe to run again whenever you change the config.
+The script downloads the models (about 7 GB), starts SearXNG, and installs both agents. It's safe to run again whenever you change the config.
 
-## Usage
+After a restart, make sure Docker Desktop and Ollama are running.
 
-Open a terminal in any project folder and run `opencode`. Press **Tab** to switch modes:
+## Unattended agent
+
+Run these from this folder:
+
+```powershell
+.venv\Scripts\agent run "Compare SQLite and DuckDB for local analytics"
+.venv\Scripts\agent run "Fix the failing tests" --project C:\code\my-app
+.venv\Scripts\agent run "Summarize my notes on Heron" --no-web
+```
+
+Each run gets a folder in `runs/` containing:
+
+| File | Contents |
+|---|---|
+| `report.md` | The result, with any warnings from the agent's checks at the top |
+| `changes.patch` | Code changes, when you used `--project` |
+| `result.json` | Status, steps used, revisions, and time taken |
+| `trace.jsonl` | Every step the agent took, for debugging |
+
+With `--project`, the agent works on a copy of your folder and never changes the original. To keep its changes, run `git apply -p2 <path to changes.patch>` from your project folder. The command is also printed when the run ends.
+
+### Other commands
+
+| Command | What it does |
+|---|---|
+| `agent runs` | List runs and their status |
+| `agent resume <id>` | Continue a run that was interrupted, from its last completed step |
+| `agent index` | Update the search index after changing `knowledge/` |
+| `agent search "query"` | Search your notes directly, to check what the agent would find |
+| `agent eval` | Score the agent on fixed tasks (see [Improving it](#improving-it)) |
+
+### How a run works
+
+```
+plan -> work <-> tools
+          |
+        review -- problems found --> back to work (at most 2 times)
+          |
+        report
+```
+
+1. **Plan:** the model writes a short plan.
+2. **Work:** the model calls tools until it has a result.
+3. **Review:** code checks that every URL cited was actually opened. Then the model checks whether the result does what the task asked, given which tools it used and the last command's output. Any problems go back to the agent to fix.
+4. **Report:** the result is saved, with warnings for anything the reviews couldn't resolve.
+
+Limits keep a run from going on forever: 30 steps, 45 minutes, and 3 sections of any one web page. The agent is warned as it nears the step limit. If it hits a limit, it writes up what it has and the report says so. Every step is saved, so `agent resume` can pick up after a crash or a reboot.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `knowledge_search` | Searches your files in `knowledge/` |
+| `web_search`, `web_read_page` | Searches the web, and reads pages as clean text |
+| `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only |
+| `run_command` | Runs a command in the sandbox (see [Safety](#safety)) |
+
+### Your notes (RAG)
+
+Put notes and documents in `knowledge/`, then run `agent index`. Indexing only re-processes files that changed. Text formats are supported, including Markdown, code, JSON, YAML, and CSV. PDFs and Word documents aren't supported yet.
+
+## Interactive agent
+
+Open a terminal in any project folder and run `opencode`. It starts in `build` mode. Press **Tab** to switch:
 
 | Mode | Use it for | Can run commands? |
 |---|---|---|
-| `build` | Writing and fixing code, with web access for looking things up | Asks you first |
-| `plan` | Discussing an approach without changing files | Asks you first |
+| `build` | Writing and fixing code, with web access | Asks you first |
+| `plan` | Discussing an approach; can't edit files | Asks you first |
 | `research` | A cited report on a question | No |
-| `writer` | A researched, self-edited article, saved to `articles/` | No |
+| `writer` | A researched, self-edited article | No |
 
-To run a single task without the interface:
-
-```powershell
-opencode run --agent research "Compare SQLite and DuckDB for local analytics"
-```
-
-After a restart, make sure Docker Desktop and Ollama are running. If searches fail, run `docker compose up -d` from this repo.
+If PowerShell says running scripts is disabled, use `opencode.cmd` instead.
 
 ## What to expect
 
-Measured on an RTX 4070 Laptop (8 GB) with 31 GB of RAM:
+Measured on an RTX 4070 Laptop (8 GB) with 31 GB of RAM, using the unattended agent:
 
 | Task | Time |
 |---|---|
-| Short research question, including the model loading from cold | about 2 minutes |
-| Fix two bugs, add a function and tests, and run them | about 5 minutes |
+| Answer from your notes | 10–30 seconds |
+| Short research question with cited sources | 35 seconds to 3 minutes |
+| Fix two bugs, add a function and tests, and run them | about 1.5–2 minutes |
+| Detailed 1,800-word comparison from five long pages | about 11 minutes |
 
-The model handles research summaries and small, well-defined coding tasks. Expect it to struggle with large changes across many files, and check its citations and code.
+The model handles research summaries and small, well-defined coding tasks well. It still makes factual mistakes, and the reviews don't catch all of them, so check anything that matters. Expect it to struggle with large changes across many files.
 
 ## Safety
 
-- Commands run directly on your machine, not in a sandbox. `build` asks before each one, so read them before approving.
-- `research` and `writer` read untrusted web pages, so they can't run commands. They can still edit files in the current project, so use version control.
-- `build`, `research` and `writer` can edit files in the current project without asking. `plan` can't edit files.
-- Access outside the current project asks first in `build` and `plan`, and is blocked in `research` and `writer`.
-- `.env` files are blocked from the file-reading tool. A command you approve could still read them.
+The unattended agent runs with no one approving its actions, so its limits are enforced in code rather than by asking:
+
+- Commands run in a Docker container with no network access, a read-only system, no admin rights, and memory and process limits. The container can only see the run's workspace, and commands time out after 2 minutes.
+- File tools can't leave the workspace or touch `.git` folders.
+- `--project` copies your folder without `.git`, `.env` files, `node_modules`, or virtual environments, so the agent never sees those.
 - `web_read_page` refuses local and private network addresses.
-- Search queries and page requests still reach the internet, though the model and your files stay local.
+
+One risk remains. The agent reads untrusted web pages and your private notes in the same run, so a malicious page could try to trick it into putting your notes in a web address it then visits. In testing it ignored planted instructions, but that isn't a guarantee. Don't keep passwords or keys in `knowledge/`, and use `--no-web` for tasks about private notes.
+
+For the interactive agent:
+
+- Commands run directly on your machine, not in a sandbox. `build` and `plan` ask before each one, so read them before approving. `research` and `writer` can't run commands.
+- `build`, `research` and `writer` can edit files in the current project without asking, so use version control. `plan` can't edit files.
+- `.env` files are blocked from the file-reading tool. A command you approve could still read them.
+
+In both agents, search queries and page requests reach the internet, though the model and your files stay local.
+
+## Improving it
+
+`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
+
+A good way to improve the agent over time:
+
+1. When a run goes wrong, add a task to `evals/tasks.json` that reproduces it.
+2. Change a prompt, a limit, or a tool.
+3. Run `agent eval` and compare the result with the history.
+
+Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted model, so they don't need the GPU.
 
 ## Customizing
 
 | To change | Edit |
 |---|---|
-| Permissions, default model | [opencode.jsonc](opencode.jsonc) |
-| A mode's instructions, or add a new mode | [.opencode/agents/](.opencode/agents/) |
-| Model or context size | [ollama/Modelfile](ollama/Modelfile), and keep `limit.context` in `opencode.jsonc` in sync |
-| Search and page-reading tools | [tools/web-search/](tools/web-search/) (`npm test` runs its tests) |
+| Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py) |
+| Unattended agent: limits and models | [agent/config.py](agent/config.py), or `AGENT_*` environment variables |
+| Interactive agent: permissions | [opencode.jsonc](opencode.jsonc) |
+| Interactive agent: modes | [.opencode/agents/](.opencode/agents/) |
+| Model or context size | [ollama/Modelfile](ollama/Modelfile), then `limit.context` in `opencode.jsonc` and `context_tokens` in `agent/config.py` |
+| Web tools | [tools/web-search/](tools/web-search/) (`npm test` runs its tests) |
 | Search engine settings | [searxng/settings.yml](searxng/settings.yml) |
 
-Run the setup script afterwards so your changes apply in other folders too.
+Run the setup script afterwards so the interactive agent picks up your changes in other folders too.
 
 A larger context fits more but runs slower, because more of the model spills from the GPU onto the CPU:
 

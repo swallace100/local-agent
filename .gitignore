@@ -6,6 +6,19 @@
 # Node
 node_modules/
 
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+build/
+.pytest_cache/
+
+# Agent data: run output, indexes, and your private documents
+runs/
+.data/
+knowledge/*
+!knowledge/README.md
+
 # OpenCode's generated plugin files (agents/ is tracked)
 .opencode/package.json
 .opencode/package-lock.json

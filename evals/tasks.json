@@ -1,0 +1,51 @@
+[
+  {
+    "id": "rag-private-fact",
+    "task": "According to my notes, what port does the Heron ingest service listen on, and who owns it? Name the source file.",
+    "use_web": false,
+    "checks": [
+      { "type": "contains", "text": "7421" },
+      { "type": "contains", "text": "Marisol" },
+      { "type": "contains", "text": "heron-service.md" },
+      { "type": "tool_used", "name": "knowledge_search" }
+    ]
+  },
+  {
+    "id": "rag-admits-unknown",
+    "task": "According to my notes, what database does the Heron ingest service use? If my notes don't say, reply that they don't say. Don't guess.",
+    "use_web": false,
+    "checks": [
+      { "type": "tool_used", "name": "knowledge_search" },
+      { "type": "not_contains", "text": "postgres" },
+      { "type": "not_contains", "text": "mysql" }
+    ]
+  },
+  {
+    "id": "research-python-release",
+    "task": "What is the latest stable version of Python, and when was it released? Give a short answer citing the pages you read.",
+    "checks": [
+      { "type": "status", "value": "done" },
+      { "type": "contains", "text": "3.15" },
+      { "type": "contains", "text": "python.org" },
+      { "type": "tool_used", "name": "web_read_page" }
+    ]
+  },
+  {
+    "id": "code-fix-and-extend",
+    "task": "The tests in test_inventory.py fail. Fix the bugs in inventory.py without changing the existing tests. Then add a function restock(items, name, amount) that increases that item's qty and raises KeyError if the name isn't found, and add a test for each of those two cases. Run the tests with: python -m unittest",
+    "project": "inventory",
+    "use_web": false,
+    "checks": [
+      { "type": "tool_used", "name": "run_command" },
+      { "type": "command", "command": "python -m unittest" },
+      {
+        "type": "command",
+        "command": "python -c \"from inventory import restock; i=[{'name':'a','qty':1}]; restock(i,'a',2); assert i[0]['qty']==3\ntry:\n    restock(i,'z',1)\nexcept KeyError:\n    pass\nelse:\n    raise SystemExit(1)\""
+      },
+      {
+        "type": "command",
+        "command": "python -c \"import re; s=open('test_inventory.py').read(); assert 'assertEqual(low_stock(ITEMS, 4), [])' in s and 'assertEqual(total_value(ITEMS), 26.0)' in s\""
+      }
+    ]
+  }
+]
