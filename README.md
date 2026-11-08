@@ -4,13 +4,13 @@ A private agent that runs on your own GPU. It can research on the web, search yo
 
 It includes two agents that share one local model and the same web tools:
 
-| | Unattended agent | Interactive agent |
-|---|---|---|
-| Use it for | Handing off a task and coming back to the result | Working alongside it in a terminal |
-| Built with | [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview), in [agent/](agent/) | [OpenCode](https://opencode.ai), configured in [opencode.jsonc](opencode.jsonc) |
-| Searches your notes | Yes | No |
-| Runs commands | In a Docker sandbox with no network | On your machine, after asking you |
-| Changes your code | No. It works on a copy and gives you a patch | Yes, directly |
+|                     | Unattended agent                                                                           | Interactive agent                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Use it for          | Handing off a task and coming back to the result                                           | Working alongside it in a terminal                                              |
+| Built with          | [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview), in [agent/](agent/) | [OpenCode](https://opencode.ai), configured in [opencode.jsonc](opencode.jsonc) |
+| Searches your notes | Yes                                                                                        | No                                                                              |
+| Runs commands       | In a Docker sandbox with no network                                                        | On your machine, after asking you                                               |
+| Changes your code   | No. It works on a copy and gives you a patch                                               | Yes, directly                                                                   |
 
 Both use [Ollama](https://ollama.com) to run Qwen 3.5 9B locally, and a self-hosted [SearXNG](https://docs.searxng.org) instance for web search.
 
@@ -38,24 +38,24 @@ Run these from this folder:
 
 Each run gets a folder in `runs/` containing:
 
-| File | Contents |
-|---|---|
-| `report.md` | The result, with any warnings from the agent's checks at the top |
-| `changes.patch` | Code changes, when you used `--project` |
-| `result.json` | Status, steps used, revisions, and time taken |
-| `trace.jsonl` | Every step the agent took, for debugging |
+| File            | Contents                                                         |
+| --------------- | ---------------------------------------------------------------- |
+| `report.md`     | The result, with any warnings from the agent's checks at the top |
+| `changes.patch` | Code changes, when you used `--project`                          |
+| `result.json`   | Status, steps used, revisions, and time taken                    |
+| `trace.jsonl`   | Every step the agent took, for debugging                         |
 
 With `--project`, the agent works on a copy of your folder and never changes the original. To keep its changes, run `git apply -p2 <path to changes.patch>` from your project folder. The command is also printed when the run ends.
 
 ### Other commands
 
-| Command | What it does |
-|---|---|
-| `agent runs` | List runs and their status |
-| `agent resume <id>` | Continue a run that was interrupted, from its last completed step |
-| `agent index` | Update the search index after changing `knowledge/` |
-| `agent search "query"` | Search your notes directly, to check what the agent would find |
-| `agent eval` | Score the agent on fixed tasks (see [Improving it](#improving-it)) |
+| Command                | What it does                                                       |
+| ---------------------- | ------------------------------------------------------------------ |
+| `agent runs`           | List runs and their status                                         |
+| `agent resume <id>`    | Continue a run that was interrupted, from its last completed step  |
+| `agent index`          | Update the search index after changing `knowledge/`                |
+| `agent search "query"` | Search your notes directly, to check what the agent would find     |
+| `agent eval`           | Score the agent on fixed tasks (see [Improving it](#improving-it)) |
 
 ### How a run works
 
@@ -76,12 +76,12 @@ Limits keep a run from going on forever: 30 steps, 45 minutes, and 3 sections of
 
 ### Tools
 
-| Tool | What it does |
-|---|---|
-| `knowledge_search` | Searches your files in `knowledge/` |
-| `web_search`, `web_read_page` | Searches the web, and reads pages as clean text |
-| `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only |
-| `run_command` | Runs a command in the sandbox (see [Safety](#safety)) |
+| Tool                                                 | What it does                                          |
+| ---------------------------------------------------- | ----------------------------------------------------- |
+| `knowledge_search`                                   | Searches your files in `knowledge/`                   |
+| `web_search`, `web_read_page`                        | Searches the web, and reads pages as clean text       |
+| `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only           |
+| `run_command`                                        | Runs a command in the sandbox (see [Safety](#safety)) |
 
 ### Your notes (RAG)
 
@@ -91,12 +91,12 @@ Put notes and documents in `knowledge/`, then run `agent index`. Indexing only r
 
 Open a terminal in any project folder and run `opencode`. It starts in `build` mode. Press **Tab** to switch:
 
-| Mode | Use it for | Can run commands? |
-|---|---|---|
-| `build` | Writing and fixing code, with web access | Asks you first |
-| `plan` | Discussing an approach; can't edit files | Asks you first |
-| `research` | A cited report on a question | No |
-| `writer` | A researched, self-edited article | No |
+| Mode       | Use it for                               | Can run commands? |
+| ---------- | ---------------------------------------- | ----------------- |
+| `build`    | Writing and fixing code, with web access | Asks you first    |
+| `plan`     | Discussing an approach; can't edit files | Asks you first    |
+| `research` | A cited report on a question             | No                |
+| `writer`   | A researched, self-edited article        | No                |
 
 If PowerShell says running scripts is disabled, use `opencode.cmd` instead.
 
@@ -104,12 +104,12 @@ If PowerShell says running scripts is disabled, use `opencode.cmd` instead.
 
 Measured on an RTX 4070 Laptop (8 GB) with 31 GB of RAM, using the unattended agent:
 
-| Task | Time |
-|---|---|
-| Answer from your notes | 10–30 seconds |
-| Short research question with cited sources | 35 seconds to 3 minutes |
-| Fix two bugs, add a function and tests, and run them | about 1.5–2 minutes |
-| Detailed 1,800-word comparison from five long pages | about 11 minutes |
+| Task                                                 | Time                    |
+| ---------------------------------------------------- | ----------------------- |
+| Answer from your notes                               | 10–30 seconds           |
+| Short research question with cited sources           | 35 seconds to 3 minutes |
+| Fix two bugs, add a function and tests, and run them | about 1.5–2 minutes     |
+| Detailed 1,800-word comparison from five long pages  | about 11 minutes        |
 
 The model handles research summaries and small, well-defined coding tasks well. It still makes factual mistakes, and the reviews don't catch all of them, so check anything that matters. Expect it to struggle with large changes across many files.
 
@@ -146,26 +146,26 @@ Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted mod
 
 ## Customizing
 
-| To change | Edit |
-|---|---|
-| Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py) |
-| Unattended agent: limits and models | [agent/config.py](agent/config.py), or `AGENT_*` environment variables |
-| Interactive agent: permissions | [opencode.jsonc](opencode.jsonc) |
-| Interactive agent: modes | [.opencode/agents/](.opencode/agents/) |
-| Model or context size | [ollama/Modelfile](ollama/Modelfile), then `limit.context` in `opencode.jsonc` and `context_tokens` in `agent/config.py` |
-| Web tools | [tools/web-search/](tools/web-search/) (`npm test` runs its tests) |
-| Search engine settings | [searxng/settings.yml](searxng/settings.yml) |
+| To change                              | Edit                                                                                                                     |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py)                                                                                         |
+| Unattended agent: limits and models    | [agent/config.py](agent/config.py), or `AGENT_*` environment variables                                                   |
+| Interactive agent: permissions         | [opencode.jsonc](opencode.jsonc)                                                                                         |
+| Interactive agent: modes               | [.opencode/agents/](.opencode/agents/)                                                                                   |
+| Model or context size                  | [ollama/Modelfile](ollama/Modelfile), then `limit.context` in `opencode.jsonc` and `context_tokens` in `agent/config.py` |
+| Web tools                              | [tools/web-search/](tools/web-search/) (`npm test` runs its tests)                                                       |
+| Search engine settings                 | [searxng/settings.yml](searxng/settings.yml)                                                                             |
 
 Run the setup script afterwards so the interactive agent picks up your changes in other folders too.
 
 A larger context fits more but runs slower, because more of the model spills from the GPU onto the CPU:
 
-| `num_ctx` | CPU/GPU split | Speed |
-|---|---|---|
-| 8K | 12% / 88% | 35 tokens/s |
-| 16K | 16% / 84% | 30 tokens/s |
-| 24K | 21% / 79% | 26 tokens/s |
-| 32K (current) | 24% / 76% | 23 tokens/s |
+| `num_ctx`     | CPU/GPU split | Speed       |
+| ------------- | ------------- | ----------- |
+| 8K            | 12% / 88%     | 35 tokens/s |
+| 16K           | 16% / 84%     | 30 tokens/s |
+| 24K           | 21% / 79%     | 26 tokens/s |
+| 32K (current) | 24% / 76%     | 23 tokens/s |
 
 ## License
 
