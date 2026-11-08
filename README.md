@@ -113,6 +113,29 @@ Measured on an RTX 4070 Laptop (8 GB) with 31 GB of RAM, using the unattended ag
 
 The model handles research summaries and small, well-defined coding tasks well. It still makes factual mistakes, and the reviews don't catch all of them, so check anything that matters. Expect it to struggle with large changes across many files.
 
+### What it's best at
+
+Use it when you can check the result, or when a mistake is cheap to fix:
+
+| Good fit | Why |
+|---|---|
+| Questions about your private notes and documents | Your files stay on your machine, and answers can be checked against them |
+| Small coding tasks that have tests | The agent runs the tests, so a wrong answer fails visibly |
+| Web research with cited sources | You can open the sources and confirm the claims |
+| First drafts, outlines, and summaries you'll edit anyway | Errors get caught when you edit |
+| Repetitive or overnight work | Runs cost nothing and have no usage limits |
+
+Avoid it when you couldn't spot an error yourself and a mistake would cost you:
+
+| Poor fit | Why |
+|---|---|
+| Learning a language, especially one other than English or Chinese | In a test set of Korean travel conversations, the Hangul was mostly usable, but the romanization was often wrong and some scenarios made no sense |
+| Medical, legal, or financial facts | It can sound confident and still be wrong |
+| Niche details with no source to check | A 9B model holds far less knowledge than a large cloud model |
+| Large changes across many files | It loses track of the wider codebase |
+
+The agent's reviews check whether a result followed the task and whether its citations were opened. They can't tell whether the content is correct, so a clean report with no warnings doesn't mean the answer is right.
+
 ## Safety
 
 The unattended agent runs with no one approving its actions, so its limits are enforced in code rather than by asking:
