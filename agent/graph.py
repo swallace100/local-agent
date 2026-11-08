@@ -64,6 +64,9 @@ EVIDENCE_CHARS = 1_500
 
 URL_PATTERN = re.compile(r"https?://[^\s)\]>\"'`,|]+")
 EXEMPT_HOSTS = ("localhost", "127.0.0.1", "example.com")
+PAGE_READING_TOOLS = ("web_read_page", "moltbook_read_post")
+NARRATION = re.compile(r"\b(let me|now i have|now i'll|i'll now|i will now)\b", re.IGNORECASE)
+MAX_NARRATION_CHARS = 400
 
 
 class AgentState(MessagesState):
@@ -122,7 +125,7 @@ def read_urls(messages: Sequence[AnyMessage]) -> set[str]:
     """Return the URLs the agent successfully opened, including where they redirected."""
     urls = set()
     for message in messages:
-        if isinstance(message, ToolMessage) and message.name == "web_read_page" and message.status != "error":
+        if isinstance(message, ToolMessage) and message.name in PAGE_READING_TOOLS and message.status != "error":
             final_url = re.search(r"^URL: (\S+)", str(message.content), re.MULTILINE)
             if final_url:
                 urls.add(_normalize(final_url.group(1)))
@@ -146,6 +149,20 @@ def unread_citations(report: str, task: str, messages: Sequence[AnyMessage]) -> 
     return sorted(u for u in cited if u not in allowed and not any(h in u for h in EXEMPT_HOSTS))
 
 
+def strip_narration(report: str) -> str:
+    """Drop an opening paragraph where the model talks about its work instead of giving the result."""
+    first, _, rest = report.strip().partition("\n\n")
+    is_narration = (
+        rest.strip()
+        and not first.startswith("#")
+        and len(first) <= MAX_NARRATION_CHARS
+        and NARRATION.search(first)
+    )
+    if not is_narration:
+        return report
+    return re.sub(r"^(\s*(-{3,}|\*{3,})\s*\n)+", "", rest).lstrip()
+
+
 def _evidence(messages: Sequence[AnyMessage]) -> str:
     """Summarize what the agent did, so the reviewer judges more than the agent's own claims."""
     tools_used = [m.name for m in messages if isinstance(m, ToolMessage)]
@@ -162,7 +179,13 @@ def _text(message: AnyMessage) -> str:
     return message.content if isinstance(message.content, str) else str(message.content)
 
 
-def build_graph(model: BaseChatModel, tools: list[BaseTool], settings: Settings, checkpointer=None):
+def build_graph(
+    model: BaseChatModel,
+    tools: list[BaseTool],
+    settings: Settings,
+    checkpointer=None,
+    work_prompt: str = WORK_PROMPT,
+):
     model_with_tools = model.bind_tools(tools)
     model_retry = RetryPolicy(max_attempts=3, initial_interval=5.0)
 
@@ -178,7 +201,7 @@ def build_graph(model: BaseChatModel, tools: list[BaseTool], settings: Settings,
         return {
             "plan": plan_text,
             "messages": [
-                SystemMessage(WORK_PROMPT),
+                SystemMessage(work_prompt),
                 HumanMessage(f"Task:\n{state['task']}\n\nPlan:\n{plan_text}"),
             ],
         }

@@ -1,4 +1,4 @@
-"""Command line: agent run | resume | runs | index | search | eval"""
+"""Command line: agent run | resume | runs | index | search | eval | moltbook"""
 
 import argparse
 import asyncio
@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from agent.config import Settings
+from agent.moltbook import digest_task
 from agent.rag import Knowledge
 from agent.runner import resume_run, start_run
 
@@ -57,6 +58,9 @@ def main() -> None:
     evaluate = commands.add_parser("eval", help="Score the agent on the tasks in evals/tasks.json")
     evaluate.add_argument("--only", help="Run a single eval by ID")
 
+    moltbook = commands.add_parser("moltbook", help="Write a read-only digest of Moltbook")
+    moltbook.add_argument("--topic", help="Focus the digest on one subject")
+
     args = parser.parse_args()
     settings = Settings()
 
@@ -66,6 +70,8 @@ def main() -> None:
         if args.project and not args.project.is_dir():
             raise SystemExit(f"No such folder: {args.project}")
         _print_result(asyncio.run(start_run(settings, args.task, args.project, not args.no_web)))
+    elif args.command == "moltbook":
+        _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, moltbook=True)))
     elif args.command == "resume":
         _print_result(asyncio.run(resume_run(settings, args.run_id)))
     elif args.command == "runs":

@@ -16,6 +16,7 @@ from agent.graph import (
     fit_context,
     initial_state,
     read_urls,
+    strip_narration,
     unread_citations,
 )
 
@@ -196,3 +197,27 @@ def test_fit_context_blanks_oldest_tool_output_and_keeps_pairs():
     assert outputs[-1].content == "x" * 7000
     assert estimate_tokens(fitted) <= 7000
     assert messages[2].content == "x" * 7000, "the saved state must not change"
+
+
+def test_opening_narration_is_removed():
+    report = "Now I have read 5 posts. Let me compile the report.\n\n## Themes\n\nMemory"
+    assert strip_narration(report) == "## Themes\n\nMemory"
+
+
+def test_a_rule_after_the_narration_is_removed_too():
+    assert strip_narration("Let me give the result:\n\n---\n\n**Title**\n\nBody") == "**Title**\n\nBody"
+
+
+def test_a_normal_opening_is_kept():
+    report = "SQLite suits small apps.\n\nDuckDB suits analytics."
+    assert strip_narration(report) == report
+
+
+def test_a_heading_mentioning_narration_words_is_kept():
+    report = "# Let me explain\n\nBody"
+    assert strip_narration(report) == report
+
+
+def test_a_report_that_is_only_one_paragraph_is_kept():
+    report = "Let me be clear: the answer is 4."
+    assert strip_narration(report) == report

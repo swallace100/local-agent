@@ -14,7 +14,9 @@ from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agent.config import Settings
-from agent.graph import build_graph, initial_state
+from agent.graph import WORK_PROMPT, build_graph, initial_state, strip_narration
+from agent.moltbook import WORK_PROMPT as MOLTBOOK_WORK_PROMPT
+from agent.moltbook import add_plug_section, moltbook_tools
 from agent.rag import Knowledge
 from agent.tools import command_tool, file_tools, knowledge_tool, web_tools
 
@@ -29,7 +31,7 @@ class RunResult:
     run_dir: Path
 
 
-def preflight(settings: Settings, need_web: bool) -> None:
+def preflight(settings: Settings, need_web: bool, need_docker: bool = True) -> None:
     """Fail immediately with a useful message, rather than partway through an unattended run."""
     checks = [(f"{settings.ollama_url}/api/version", "Ollama isn't running. Start the Ollama app.")]
     if need_web:
@@ -39,8 +41,7 @@ def preflight(settings: Settings, need_web: bool) -> None:
             urllib.request.urlopen(url, timeout=5)
         except OSError as error:
             raise SystemExit(f"{message} ({error})") from error
-    docker = subprocess.run(["docker", "info"], capture_output=True)
-    if docker.returncode != 0:
+    if need_docker and subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
         raise SystemExit("Docker isn't running, and commands need it. Start Docker Desktop.")
 
 
@@ -53,7 +54,9 @@ def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
     return ignored
 
 
-def _new_run(settings: Settings, task: str, project: Path | None, use_web: bool) -> Path:
+def _new_run(
+    settings: Settings, task: str, project: Path | None, use_web: bool, moltbook: bool = False
+) -> Path:
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     run_dir = settings.runs_dir / run_id
     workspace = run_dir / "workspace"
@@ -66,6 +69,7 @@ def _new_run(settings: Settings, task: str, project: Path | None, use_web: bool)
         "task": task,
         "project": str(project) if project else None,
         "use_web": use_web,
+        "moltbook": moltbook,
         "created": datetime.now().isoformat(timespec="seconds"),
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -90,7 +94,7 @@ def _write_patch(run_dir: Path) -> None:
 
 def _save_results(run_dir: Path, state: dict, seconds: float) -> None:
     warnings = state.get("warnings") or []
-    report = state.get("report", "")
+    report = strip_narration(state.get("report", ""))
     if warnings:
         notes = "\n".join(f"- {w}" for w in warnings).replace("\n", "\n> ")
         report = f"> **Warnings from the agent's checks:**\n>\n> {notes}\n\n{report}"
@@ -133,13 +137,19 @@ def _log(trace_file, node: str, update: dict | None) -> None:
 
 async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=None) -> RunResult:
     meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    preflight(settings, need_web=meta["use_web"])
+    is_moltbook = meta.get("moltbook", False)
+    preflight(settings, need_web=meta["use_web"], need_docker=not is_moltbook)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     workspace = run_dir / "workspace"
     config = {"configurable": {"thread_id": run_dir.name}, "recursion_limit": 500}
 
-    knowledge = knowledge or Knowledge(settings)
-    tools = [*file_tools(workspace), command_tool(settings, workspace), knowledge_tool(knowledge)]
+    if is_moltbook:
+        # Bot-written content must never share a run with notes, files or commands.
+        tools, work_prompt = moltbook_tools(), MOLTBOOK_WORK_PROMPT
+    else:
+        knowledge = knowledge or Knowledge(settings)
+        tools = [*file_tools(workspace), command_tool(settings, workspace), knowledge_tool(knowledge)]
+        work_prompt = WORK_PROMPT
     model = ChatOllama(
         model=settings.model, base_url=settings.ollama_url, temperature=0.2, reasoning=False
     )
@@ -148,7 +158,7 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)) as saver:
 
         async def run_graph(all_tools):
-            graph = build_graph(model, all_tools, settings, checkpointer=saver)
+            graph = build_graph(model, all_tools, settings, checkpointer=saver, work_prompt=work_prompt)
             if graph_input is None:
                 # Restart the time budget, since time spent stopped shouldn't count.
                 await graph.aupdate_state(config, {"started_at": time.time()})
@@ -164,6 +174,8 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
         else:
             state = await run_graph(tools)
 
+    if is_moltbook:
+        state["report"] = add_plug_section(strip_narration(state.get("report", "")), state["messages"])
     _save_results(run_dir, state, time.time() - started)
     return RunResult(run_dir.name, state.get("status") or "unknown", run_dir)
 
@@ -174,8 +186,9 @@ async def start_run(
     project: Path | None = None,
     use_web: bool = True,
     knowledge: Knowledge | None = None,
+    moltbook: bool = False,
 ) -> RunResult:
-    run_dir = _new_run(settings, task, project, use_web)
+    run_dir = _new_run(settings, task, project, use_web, moltbook)
     print(f"Run {run_dir.name}", flush=True)
     return await _execute(settings, run_dir, initial_state(task), knowledge=knowledge)
 

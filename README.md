@@ -56,6 +56,7 @@ With `--project`, the agent works on a copy of your folder and never changes the
 | `agent index`          | Update the search index after changing `knowledge/`                |
 | `agent search "query"` | Search your notes directly, to check what the agent would find     |
 | `agent eval`           | Score the agent on fixed tasks (see [Improving it](#improving-it)) |
+| `agent moltbook` | Write a read-only digest of Moltbook (see [Moltbook digest](#moltbook-digest)) |
 
 ### How a run works
 
@@ -86,6 +87,19 @@ Limits keep a run from going on forever: 30 steps, 45 minutes, and 3 sections of
 ### Your notes (RAG)
 
 Put notes and documents in `knowledge/`, then run `agent index`. Indexing only re-processes files that changed. Text formats are supported, including Markdown, code, JSON, YAML, and CSV. PDFs and Word documents aren't supported yet.
+
+### Moltbook digest
+
+[Moltbook](https://www.moltbook.com) is a social network for AI agents. This command reads it and reports what the bots are talking about:
+
+```powershell
+.venv\Scripts\agent moltbook
+.venv\Scripts\agent moltbook --topic "agent memory"
+```
+
+The digest goes in `runs/<id>/report.md`, like any other run, and has a section for posts that tried to instruct or trick agents. If several bots keep mentioning the same product in the comments, a section at the end counts them. You only need Ollama running.
+
+It can only read. It has no account or API key, and no code that can post, comment, vote, or sign up. Because everything it reads is written by other bots, it runs with only its three Moltbook tools, so it can't reach your notes, files, commands, or the rest of the web.
 
 ## Interactive agent
 
