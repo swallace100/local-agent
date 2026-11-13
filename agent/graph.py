@@ -3,8 +3,8 @@
     plan -> work <-> tools
               |        |
               v        v (out of budget)
-           review   wrap_up
-            |  |       |
+           review   wrap_up      (tools also goes to review when the agent
+            |  |       |          hands in a file as its result)
     revise -+  +-> finish <-+
 
 Every step is checkpointed, so an interrupted run can be resumed.
@@ -12,8 +12,9 @@ Every step is checkpointed, so an interrupted run can be resumed.
 
 import re
 import time
+from datetime import date
 from collections.abc import Sequence
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlparse
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -46,7 +47,10 @@ Rules:
 knowledge document.
 - Steps are limited. Read only what you need, and prefer a few sources over paging through one long \
 document.
-- Stop as soon as the task is done. Don't keep researching once you can answer."""
+- Stop as soon as the task is done. Don't keep researching once you can answer.
+- Your final reply is all the user reads, so it must contain the full result, not a description \
+of what you did. If the result is a document you saved to a file, call finish_with_file with its \
+path instead of replying."""
 
 REVIEW_PROMPT = """You review an autonomous agent's result. Decide if the result does what \
 the task asked. Reply with PASS on the first line if it does. Otherwise reply with FAIL on \
@@ -58,11 +62,19 @@ from what you have, and clearly state anything unfinished or unverified."""
 
 EMPTY_REPLY = "Your reply was empty. Write the final result."
 TOOL_OUTPUT_REMOVED = "[Old tool output removed to save space. Call the tool again if needed.]"
+# A starting guess. Each model reply reports the real count, and the run adjusts to it.
 CHARS_PER_TOKEN = 3.5
+MIN_CHARS_PER_TOKEN, MAX_CHARS_PER_TOKEN = 1.5, 4.5
+# Below this many tokens of conversation, a measurement is too noisy to adjust from.
+MIN_TOKENS_TO_CALIBRATE = 500
+FINISH_TOOL = "finish_with_file"
+FILE_WRITING_TOOLS = ("write_file", "edit_file")
 KEEP_RECENT_TOOL_OUTPUTS = 3
 EVIDENCE_CHARS = 1_500
 
-URL_PATTERN = re.compile(r"https?://[^\s)\]>\"'`,|]+")
+# A bracketed part inside the address is kept, as in wiki/Ruby_(programming_language),
+# while a bracket that merely closes the surrounding text is left out.
+URL_PATTERN = re.compile(r"https?://(?:[^\s()\]>\"'`,|]|\([^\s()]*\))+")
 EXEMPT_HOSTS = ("localhost", "127.0.0.1", "example.com")
 PAGE_READING_TOOLS = ("web_read_page", "moltbook_read_post")
 NARRATION = re.compile(r"\b(let me|now i have|now i'll|i'll now|i will now)\b", re.IGNORECASE)
@@ -78,13 +90,43 @@ class AgentState(MessagesState):
     report: str
     status: str
     warnings: list[str]
+    # Measured from the model's own token counts. See calibrate().
+    chars_per_token: float
+    token_overhead: int | None
 
 
-def estimate_tokens(messages: Sequence[AnyMessage]) -> int:
-    return int(sum(len(str(m.content)) + len(str(getattr(m, "tool_calls", ""))) for m in messages) / CHARS_PER_TOKEN)
+def _chars(messages: Sequence[AnyMessage]) -> int:
+    return sum(len(str(m.content)) + len(str(getattr(m, "tool_calls", ""))) for m in messages)
 
 
-def fit_context(messages: Sequence[AnyMessage], max_tokens: int) -> list[AnyMessage]:
+def estimate_tokens(
+    messages: Sequence[AnyMessage], chars_per_token: float = CHARS_PER_TOKEN, overhead: int = 0
+) -> int:
+    return int(overhead + _chars(messages) / chars_per_token)
+
+
+def calibrate(sent_chars: int, input_tokens: int, chars_per_token: float, overhead: int | None) -> dict:
+    """Adjust the token estimate to what the model actually counted for the last request.
+
+    The first request is mostly fixed cost (the tool definitions and chat template), so it
+    sets the overhead. Later requests set how many characters of conversation make one token,
+    which differs between prose, code and other languages.
+    """
+    if overhead is None:
+        return {"token_overhead": max(0, int(input_tokens - sent_chars / chars_per_token))}
+    text_tokens = input_tokens - overhead
+    if text_tokens < MIN_TOKENS_TO_CALIBRATE:
+        return {}
+    measured = sent_chars / text_tokens
+    return {"chars_per_token": min(MAX_CHARS_PER_TOKEN, max(MIN_CHARS_PER_TOKEN, measured))}
+
+
+def fit_context(
+    messages: Sequence[AnyMessage],
+    max_tokens: int,
+    chars_per_token: float = CHARS_PER_TOKEN,
+    overhead: int = 0,
+) -> list[AnyMessage]:
     """Blank the oldest tool outputs until the conversation fits in the context window.
 
     The saved state keeps everything. Only what's sent to the model shrinks.
@@ -92,10 +134,19 @@ def fit_context(messages: Sequence[AnyMessage], max_tokens: int) -> list[AnyMess
     fitted = list(messages)
     tool_indexes = [i for i, m in enumerate(fitted) if isinstance(m, ToolMessage)]
     for i in tool_indexes[: -KEEP_RECENT_TOOL_OUTPUTS or None]:
-        if estimate_tokens(fitted) <= max_tokens:
+        if estimate_tokens(fitted, chars_per_token, overhead) <= max_tokens:
             break
         fitted[i] = fitted[i].model_copy(update={"content": TOOL_OUTPUT_REMOVED})
     return fitted
+
+
+def date_note() -> str:
+    """Tell the model the date, or it treats anything newer than its training data as fake."""
+    return (
+        f"Today's date is {date.today():%B %d, %Y}. Your own knowledge is older than that, so "
+        "sources you read may describe newer events and versions. Those are real, and they "
+        "take priority over what you remember."
+    )
 
 
 def budget_note(steps: int, max_steps: int) -> list[HumanMessage]:
@@ -146,7 +197,13 @@ def unread_citations(report: str, task: str, messages: Sequence[AnyMessage]) -> 
     """Return URLs in the report that the agent never opened, checked in code rather than by the model."""
     allowed = read_urls(messages) | {_normalize(u) for u in URL_PATTERN.findall(task)}
     cited = {_normalize(u) for u in URL_PATTERN.findall(report)}
-    return sorted(u for u in cited if u not in allowed and not any(h in u for h in EXEMPT_HOSTS))
+    return sorted(u for u in cited if u not in allowed and not is_exempt(u))
+
+
+def is_exempt(url: str) -> bool:
+    """Placeholder hosts can be cited freely. Matched on the host, not anywhere in the URL."""
+    host = urlparse(url).hostname or ""
+    return any(host == exempt or host.endswith(f".{exempt}") for exempt in EXEMPT_HOSTS)
 
 
 def strip_narration(report: str) -> str:
@@ -170,6 +227,17 @@ def _evidence(messages: Sequence[AnyMessage]) -> str:
         (m for m in reversed(messages) if isinstance(m, ToolMessage) and m.name == "run_command"), None
     )
     summary = f"Tools called, in order: {', '.join(tools_used) or 'none'}"
+    written = sorted(
+        {
+            str(call["args"].get("path"))
+            for m in messages
+            if isinstance(m, AIMessage)
+            for call in m.tool_calls
+            if call["name"] in FILE_WRITING_TOOLS
+        }
+    )
+    if written:
+        summary += f"\nFiles written: {', '.join(written)}"
     if last_command:
         summary += f"\nLast command output:\n{str(last_command.content)[-EVIDENCE_CHARS:]}"
     return summary
@@ -177,6 +245,16 @@ def _evidence(messages: Sequence[AnyMessage]) -> str:
 
 def _text(message: AnyMessage) -> str:
     return message.content if isinstance(message.content, str) else str(message.content)
+
+
+def handed_in_file(messages: Sequence[AnyMessage]) -> str | None:
+    """Return the file contents the agent just handed in as its result, if it did."""
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage):
+            return None
+        if message.name == FINISH_TOOL and message.status != "error":
+            return _text(message)
+    return None
 
 
 def build_graph(
@@ -202,18 +280,28 @@ def build_graph(
             "plan": plan_text,
             "messages": [
                 SystemMessage(work_prompt),
-                HumanMessage(f"Task:\n{state['task']}\n\nPlan:\n{plan_text}"),
+                HumanMessage(f"{date_note()}\n\nTask:\n{state['task']}\n\nPlan:\n{plan_text}"),
             ],
         }
 
     async def work(state: AgentState) -> dict:
-        messages = fit_context(state["messages"], settings.context_tokens)
+        # Runs saved before these were added don't have them.
+        chars_per_token = state.get("chars_per_token") or CHARS_PER_TOKEN
+        overhead = state.get("token_overhead")
+        messages = fit_context(
+            state["messages"], settings.context_tokens, chars_per_token, overhead or 0
+        )
         messages += budget_note(state["steps"], settings.max_steps)
         response = await model_with_tools.ainvoke(messages)
-        return {"messages": [response], "steps": state["steps"] + 1}
+        update = {"messages": [response], "steps": state["steps"] + 1}
+        input_tokens = (getattr(response, "usage_metadata", None) or {}).get("input_tokens")
+        if input_tokens:
+            update |= calibrate(_chars(messages), input_tokens, chars_per_token, overhead)
+        return update
 
     async def review(state: AgentState) -> dict:
-        report = _text(state["messages"][-1]).strip()
+        file_result = handed_in_file(state["messages"])
+        report = (_text(state["messages"][-1]) if file_result is None else file_result).strip()
         issues = []
         if not report:
             issues.append(EMPTY_REPLY)
@@ -223,12 +311,17 @@ def build_graph(
                 "You cited URLs you never opened. Open each with web_read_page, or remove "
                 "the claim and citation:\n" + "\n".join(unread)
             )
+        elif report and read_urls(state["messages"]) and not URL_PATTERN.search(report):
+            issues.append(
+                "You opened web pages but the result cites none of them. After each fact, "
+                "give the URL of the page it came from."
+            )
         if not issues:
             verdict = await model.ainvoke(
                 [
                     SystemMessage(REVIEW_PROMPT),
                     HumanMessage(
-                        f"Task:\n{state['task']}\n\nEvidence:\n{_evidence(state['messages'])}"
+                        f"{date_note()}\n\nTask:\n{state['task']}\n\nEvidence:\n{_evidence(state['messages'])}"
                         f"\n\nResult:\n{report}"
                     ),
                 ]
@@ -250,7 +343,14 @@ def build_graph(
 
     async def wrap_up(state: AgentState) -> dict:
         messages = [*state["messages"], HumanMessage(WRAP_UP_PROMPT)]
-        response = await model.ainvoke(fit_context(messages, settings.context_tokens))
+        response = await model.ainvoke(
+            fit_context(
+                messages,
+                settings.context_tokens,
+                state.get("chars_per_token") or CHARS_PER_TOKEN,
+                state.get("token_overhead") or 0,
+            )
+        )
         report = _text(response).strip()
         warnings = ["The run hit its step or time limit, so the result may be incomplete."]
         unread = unread_citations(report, state["task"], state["messages"])
@@ -267,6 +367,8 @@ def build_graph(
         return "tools" if state["messages"][-1].tool_calls else "review"
 
     def after_tools(state: AgentState) -> str:
+        if handed_in_file(state["messages"]) is not None:
+            return "review"
         return "wrap_up" if out_of_budget(state) else "work"
 
     def after_review(state: AgentState) -> str:
@@ -284,7 +386,7 @@ def build_graph(
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "work")
     graph.add_conditional_edges("work", after_work, ["tools", "review"])
-    graph.add_conditional_edges("tools", after_tools, ["work", "wrap_up"])
+    graph.add_conditional_edges("tools", after_tools, ["work", "review", "wrap_up"])
     graph.add_conditional_edges("review", after_review, ["work", "wrap_up", END])
     graph.add_edge("wrap_up", END)
     return graph.compile(checkpointer=checkpointer)
@@ -301,4 +403,6 @@ def initial_state(task: str) -> dict:
         "status": "",
         "warnings": [],
         "messages": [],
+        "chars_per_token": CHARS_PER_TOKEN,
+        "token_overhead": None,
     }

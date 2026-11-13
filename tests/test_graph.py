@@ -10,8 +10,10 @@ from langchain_core.tools import tool
 
 from agent.config import Settings
 from agent.graph import (
+    CHARS_PER_TOKEN,
     TOOL_OUTPUT_REMOVED,
     build_graph,
+    calibrate,
     estimate_tokens,
     fit_context,
     initial_state,
@@ -95,6 +97,21 @@ async def test_citing_an_unread_url_forces_a_revision():
     assert state["revisions"] == 1
     feedback = [m for m in state["messages"] if isinstance(m, HumanMessage)][-1]
     assert "never-opened.org" in feedback.content
+
+
+async def test_reading_pages_but_citing_none_forces_a_revision():
+    state, _ = await run(
+        [
+            AIMessage("plan"),
+            call("web_read_page", {"url": "https://a.org/x"}, "1"),
+            AIMessage("The answer is 42."),
+            AIMessage("The answer is 42 (https://a.org/x)."),
+            AIMessage("PASS"),
+        ]
+    )
+    assert state["status"] == "done"
+    assert state["revisions"] == 1
+    assert state["report"] == "The answer is 42 (https://a.org/x)."
 
 
 async def test_gives_up_with_warning_after_max_revisions():
@@ -183,6 +200,105 @@ def test_redirect_target_counts_as_read():
 
 def test_urls_given_in_the_task_can_be_cited():
     assert unread_citations("See https://given.org/a", "Summarize https://given.org/a", []) == []
+
+
+def test_urls_containing_brackets_are_matched_whole():
+    url = "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
+    messages = [
+        call("web_read_page", {"url": url}, "1"),
+        ToolMessage(f"URL: {url}\ntext", tool_call_id="1", name="web_read_page"),
+    ]
+    assert unread_citations(f"Ruby dates from 1995 (Source: {url}).", "task", messages) == []
+    assert unread_citations("See (https://unread.org/a).", "task", messages) == ["https://unread.org/a"]
+
+
+def test_a_placeholder_host_is_exempt_only_as_the_host():
+    assert unread_citations("See https://docs.example.com/a and http://localhost:8000", "task", []) == []
+    hidden = "https://evil.site/example.com/page"
+    assert unread_citations(f"See {hidden}", "task", []) == [hidden]
+    assert unread_citations("See https://notexample.com/a", "task", []) == ["https://notexample.com/a"]
+
+
+@tool
+def finish_with_file(path: str) -> str:
+    """Hand in a file."""
+    if path != "result.md":
+        raise ValueError("No such file")
+    return "# Full document\n\nEvery line of it."
+
+
+async def test_a_file_handed_in_becomes_the_report():
+    state, model = await run(
+        [AIMessage("plan"), call("finish_with_file", {"path": "result.md"}, "1"), AIMessage("PASS")],
+        tools=(finish_with_file,),
+    )
+    assert state["status"] == "done"
+    assert state["report"] == "# Full document\n\nEvery line of it."
+    assert "Every line of it." in model.calls[-1][-1].content, "the reviewer reads the file itself"
+
+
+async def test_handing_in_a_missing_file_keeps_the_agent_working():
+    state, _ = await run(
+        [
+            AIMessage("plan"),
+            call("finish_with_file", {"path": "missing.md"}, "1"),
+            AIMessage("The answer, in full"),
+            AIMessage("PASS"),
+        ],
+        tools=(finish_with_file,),
+    )
+    assert state["status"] == "done"
+    assert state["report"] == "The answer, in full"
+
+
+async def test_reviewer_is_told_which_files_were_written():
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write."""
+        return "Wrote it"
+
+    _, model = await run(
+        [AIMessage("plan"), call("write_file", {"path": "notes.md", "content": "x"}, "1"), AIMessage("Done"), AIMessage("PASS")],
+        tools=(write_file,),
+    )
+    assert "Files written: notes.md" in model.calls[-1][-1].content
+
+
+def test_token_estimate_adjusts_to_the_models_own_count():
+    # The first request sets the fixed overhead of tool definitions and the chat template.
+    assert calibrate(3_500, 2_000, CHARS_PER_TOKEN, None) == {"token_overhead": 1_000}
+    # Dense text: 6,000 characters took 3,000 tokens beyond the overhead.
+    assert calibrate(6_000, 4_000, CHARS_PER_TOKEN, 1_000) == {"chars_per_token": 2.0}
+    assert calibrate(60_000, 2_000, CHARS_PER_TOKEN, 1_000) == {"chars_per_token": 4.5}, "capped"
+    assert calibrate(600, 1_100, CHARS_PER_TOKEN, 1_000) == {}, "too little text to judge"
+
+
+async def test_measured_token_counts_are_saved_in_the_run():
+    def counted(message, tokens):
+        usage = {"input_tokens": tokens, "output_tokens": 1, "total_tokens": tokens + 1}
+        return message.model_copy(update={"usage_metadata": usage})
+
+    state, _ = await run(
+        [
+            AIMessage("plan"),
+            counted(call("web_read_page", {"url": "https://a.org/x"}, "1"), 1_200),
+            counted(AIMessage("Answer from https://a.org/x"), 2_400),
+            AIMessage("PASS"),
+        ]
+    )
+    assert state["token_overhead"] > 0
+    assert 1.5 <= state["chars_per_token"] <= 4.5
+
+
+def test_denser_text_makes_the_context_fill_sooner():
+    messages = [HumanMessage("task")]
+    for i in range(6):
+        messages.append(call("web_read_page", {"url": "u"}, str(i)))
+        messages.append(ToolMessage("x" * 7000, tool_call_id=str(i), name="web_read_page"))
+    blanked = lambda fitted: sum(m.content == TOOL_OUTPUT_REMOVED for m in fitted)  # noqa: E731
+    assert blanked(fit_context(messages, 13_000)) == 0
+    assert blanked(fit_context(messages, 13_000, chars_per_token=2.0)) == 3
+    assert blanked(fit_context(messages, 13_000, overhead=4_000)) > 0
 
 
 def test_fit_context_blanks_oldest_tool_output_and_keeps_pairs():

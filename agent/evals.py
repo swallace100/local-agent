@@ -25,6 +25,8 @@ def _check(check: dict, report: str, run_dir: Path, settings: Settings) -> tuple
         return check["text"].lower() in report.lower(), f"report contains {check['text']!r}"
     if kind == "not_contains":
         return check["text"].lower() not in report.lower(), f"report omits {check['text']!r}"
+    if kind == "min_chars":
+        return len(report) >= check["value"], f"report has at least {check['value']} characters"
     if kind == "status":
         status = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))["status"]
         return status == check["value"], f"status is {check['value']} (got {status})"
@@ -68,7 +70,12 @@ async def run_evals(settings: Settings, only: str | None = None) -> int:
             started = time.time()
             try:
                 result = await start_run(
-                    run_settings, task["task"], project, task.get("use_web", True), knowledge
+                    run_settings,
+                    task["task"],
+                    project,
+                    task.get("use_web", True),
+                    knowledge,
+                    task.get("mode", "agent"),
                 )
                 report = (result.run_dir / "report.md").read_text(encoding="utf-8")
                 checks = [_check(c, report, result.run_dir, settings) for c in task["checks"]]

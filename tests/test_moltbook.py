@@ -195,11 +195,11 @@ async def test_moltbook_run_gets_only_moltbook_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "Knowledge", no_knowledge)
 
     with pytest.raises(Stop):
-        await runner.start_run(settings, "digest", use_web=False, moltbook=True)
+        await runner.start_run(settings, "digest", use_web=False, mode="moltbook")
 
     assert captured["tools"] == {"moltbook_feed", "moltbook_search", "moltbook_read_post"}
     assert "observer" in captured["prompt"]
     assert captured["need_web"] is False
     assert captured["need_docker"] is False
     run_dir = next(Path(settings.runs_dir).iterdir())
-    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["moltbook"] is True
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["mode"] == "moltbook"

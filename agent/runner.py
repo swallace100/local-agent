@@ -18,9 +18,11 @@ from agent.graph import WORK_PROMPT, build_graph, initial_state, strip_narration
 from agent.moltbook import WORK_PROMPT as MOLTBOOK_WORK_PROMPT
 from agent.moltbook import add_plug_section, moltbook_tools
 from agent.rag import Knowledge
+from agent.research import build_research_graph, initial_research_state
 from agent.tools import command_tool, file_tools, knowledge_tool, web_tools
 
 # Never copied into a run, so the agent can't read secrets or a repo's git config.
+MAX_FILES_LISTED = 20
 PROJECT_IGNORE = {".git", ".venv", "venv", "node_modules", "__pycache__", ".data", "runs"}
 
 
@@ -54,9 +56,7 @@ def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
     return ignored
 
 
-def _new_run(
-    settings: Settings, task: str, project: Path | None, use_web: bool, moltbook: bool = False
-) -> Path:
+def _new_run(settings: Settings, task: str, project: Path | None, use_web: bool, mode: str) -> Path:
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     run_dir = settings.runs_dir / run_id
     workspace = run_dir / "workspace"
@@ -69,7 +69,7 @@ def _new_run(
         "task": task,
         "project": str(project) if project else None,
         "use_web": use_web,
-        "moltbook": moltbook,
+        "mode": mode,
         "created": datetime.now().isoformat(timespec="seconds"),
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -98,9 +98,11 @@ def _save_results(run_dir: Path, state: dict, seconds: float) -> None:
     if warnings:
         notes = "\n".join(f"- {w}" for w in warnings).replace("\n", "\n> ")
         report = f"> **Warnings from the agent's checks:**\n>\n> {notes}\n\n{report}"
-    (run_dir / "report.md").write_text(report, encoding="utf-8")
     if (run_dir / "baseline").exists():
         _write_patch(run_dir)
+    else:
+        report += _files_note(run_dir / "workspace")
+    (run_dir / "report.md").write_text(report, encoding="utf-8")
     summary = {
         "status": state.get("status"),
         "steps": state.get("steps"),
@@ -110,6 +112,24 @@ def _save_results(run_dir: Path, state: dict, seconds: float) -> None:
         "plan": state.get("plan"),
     }
     (run_dir / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def _files_note(workspace: Path) -> str:
+    """Point to files the agent left in its workspace, which the report alone wouldn't show."""
+    if not workspace.is_dir():
+        return ""
+    files = sorted(p.relative_to(workspace).as_posix() for p in workspace.rglob("*") if p.is_file())
+    if not files:
+        return ""
+    listed = "\n".join(f"- {name}" for name in files[:MAX_FILES_LISTED])
+    if len(files) > MAX_FILES_LISTED:
+        listed += f"\n- and {len(files) - MAX_FILES_LISTED} more"
+    return f"\n\n---\n\nFiles the agent wrote, in `{workspace}`:\n\n{listed}\n"
+
+
+def _mode(meta: dict) -> str:
+    # Runs made before modes existed only recorded whether they were Moltbook runs.
+    return meta.get("mode") or ("moltbook" if meta.get("moltbook") else "agent")
 
 
 def _log(trace_file, node: str, update: dict | None) -> None:
@@ -125,27 +145,34 @@ def _log(trace_file, node: str, update: dict | None) -> None:
                 "content": str(message.content),
             }
         )
-    trace_file.write(json.dumps({"time": time.time(), "node": node, "messages": entries}) + "\n")
+    record = {"time": time.time(), "node": node, "messages": entries}
+    if update.get("trace"):
+        record["trace"] = update["trace"]
+    trace_file.write(json.dumps(record) + "\n")
     trace_file.flush()
     calls = [
         f"{c['name']}({json.dumps(c['args'])[:90]})"
         for e in entries
         for c in (e["tool_calls"] or [])
     ]
-    print(f"[{datetime.now():%H:%M:%S}] {node}" + (f": {', '.join(calls)}" if calls else ""), flush=True)
+    detail = ", ".join(calls) or update.get("activity") or ""
+    print(f"[{datetime.now():%H:%M:%S}] {node}" + (f": {detail}" if detail else ""), flush=True)
 
 
 async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=None) -> RunResult:
     meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    is_moltbook = meta.get("moltbook", False)
-    preflight(settings, need_web=meta["use_web"], need_docker=not is_moltbook)
+    mode = _mode(meta)
+    preflight(settings, need_web=meta["use_web"], need_docker=mode == "agent")
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     workspace = run_dir / "workspace"
     config = {"configurable": {"thread_id": run_dir.name}, "recursion_limit": 500}
 
-    if is_moltbook:
+    if mode == "moltbook":
         # Bot-written content must never share a run with notes, files or commands.
         tools, work_prompt = moltbook_tools(), MOLTBOOK_WORK_PROMPT
+    elif mode == "research":
+        # Research reads and reports. It has no files to change and no commands to run.
+        tools, work_prompt = [knowledge_tool(knowledge or Knowledge(settings))], ""
     else:
         knowledge = knowledge or Knowledge(settings)
         tools = [*file_tools(workspace), command_tool(settings, workspace), knowledge_tool(knowledge)]
@@ -158,7 +185,10 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)) as saver:
 
         async def run_graph(all_tools):
-            graph = build_graph(model, all_tools, settings, checkpointer=saver, work_prompt=work_prompt)
+            if mode == "research":
+                graph = build_research_graph(model, all_tools, settings, checkpointer=saver)
+            else:
+                graph = build_graph(model, all_tools, settings, checkpointer=saver, work_prompt=work_prompt)
             if graph_input is None:
                 # Restart the time budget, since time spent stopped shouldn't count.
                 await graph.aupdate_state(config, {"started_at": time.time()})
@@ -174,7 +204,7 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
         else:
             state = await run_graph(tools)
 
-    if is_moltbook:
+    if mode == "moltbook":
         state["report"] = add_plug_section(strip_narration(state.get("report", "")), state["messages"])
     _save_results(run_dir, state, time.time() - started)
     return RunResult(run_dir.name, state.get("status") or "unknown", run_dir)
@@ -186,11 +216,13 @@ async def start_run(
     project: Path | None = None,
     use_web: bool = True,
     knowledge: Knowledge | None = None,
-    moltbook: bool = False,
+    mode: str = "agent",
 ) -> RunResult:
-    run_dir = _new_run(settings, task, project, use_web, moltbook)
+    """Start a run. mode is "agent" (tools and a sandbox), "research" or "moltbook"."""
+    run_dir = _new_run(settings, task, project, use_web, mode)
     print(f"Run {run_dir.name}", flush=True)
-    return await _execute(settings, run_dir, initial_state(task), knowledge=knowledge)
+    state = initial_research_state(task) if mode == "research" else initial_state(task)
+    return await _execute(settings, run_dir, state, knowledge=knowledge)
 
 
 async def resume_run(settings: Settings, run_id: str) -> RunResult:

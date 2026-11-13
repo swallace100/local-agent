@@ -31,10 +31,13 @@ After a restart, make sure Docker Desktop and Ollama are running.
 Run these from this folder:
 
 ```powershell
-.venv\Scripts\agent run "Compare SQLite and DuckDB for local analytics"
+.venv\Scripts\agent research "Compare SQLite and DuckDB for local analytics"
+.venv\Scripts\agent research "Summarize my notes on Heron" --no-web
 .venv\Scripts\agent run "Fix the failing tests" --project C:\code\my-app
-.venv\Scripts\agent run "Summarize my notes on Heron" --no-web
+.venv\Scripts\agent run "Write a packing list for a three-day hike" --no-web
 ```
+
+Use `agent research` for questions answered from the web or your notes. Use `agent run` for everything else: code, files, and writing.
 
 Each run gets a folder in `runs/` containing:
 
@@ -44,6 +47,7 @@ Each run gets a folder in `runs/` containing:
 | `changes.patch` | Code changes, when you used `--project`                          |
 | `result.json`   | Status, steps used, revisions, and time taken                    |
 | `trace.jsonl`   | Every step the agent took, for debugging                         |
+| `workspace/`    | Any files the agent wrote                                        |
 
 With `--project`, the agent works on a copy of your folder and never changes the original. To keep its changes, run `git apply -p2 <path to changes.patch>` from your project folder. The command is also printed when the run ends.
 
@@ -51,6 +55,7 @@ With `--project`, the agent works on a copy of your folder and never changes the
 
 | Command                | What it does                                                       |
 | ---------------------- | ------------------------------------------------------------------ |
+| `agent research "question"` | Research a question and write a cited report (see [How research works](#how-research-works)) |
 | `agent runs`           | List runs and their status                                         |
 | `agent resume <id>`    | Continue a run that was interrupted, from its last completed step  |
 | `agent index`          | Update the search index after changing `knowledge/`                |
@@ -69,11 +74,30 @@ plan -> work <-> tools
 ```
 
 1. **Plan:** the model writes a short plan.
-2. **Work:** the model calls tools until it has a result.
-3. **Review:** code checks that every URL cited was actually opened. Then the model checks whether the result does what the task asked, given which tools it used and the last command's output. Any problems go back to the agent to fix.
-4. **Report:** the result is saved, with warnings for anything the reviews couldn't resolve.
+2. **Work:** the model calls tools until it has a result. The result is its final reply, or a file it hands in with `finish_with_file`.
+3. **Review:** code checks that every URL cited was actually opened. Then the model checks whether the result does what the task asked, given which tools it used, which files it wrote, and the last command's output. Any problems go back to the agent to fix.
+4. **Report:** the result is saved, with warnings for anything the reviews couldn't resolve. If the agent left files in its workspace, the report lists them.
 
 Limits keep a run from going on forever: 30 steps, 45 minutes, and 3 sections of any one web page. The agent is warned as it nears the step limit. If it hits a limit, it writes up what it has and the report says so. Every step is saved, so `agent resume` can pick up after a crash or a reboot.
+
+When the conversation outgrows the context window, the oldest tool results are left out of what the model sees. The run measures how full the window is from the token counts Ollama reports, so this works the same for prose, code and other languages.
+
+### How research works
+
+`agent research` doesn't let the model steer. Code runs the steps, and the model does one small job at a time, each in a fresh conversation:
+
+```
+split -> gather (once per sub-question) -> write <-> review
+```
+
+1. **Split:** the model breaks the task into at most 5 sub-questions, each asking for one thing.
+2. **Gather:** for each sub-question, code searches your notes and the web. The model picks which results to read by number. For each page, the model lists facts with a quote for each one, and code keeps a fact only if its quote appears word for word in the page.
+3. **Write:** the model writes the report from the kept notes only. It never sees whole pages at this point.
+4. **Review:** code checks that every URL cited is one the notes came from. Then the model checks the report against the notes.
+
+The report ends with an Evidence section that lists each checked quote under its source, so you can verify a claim without rereading the page. A checked quote shows that the source says it. It doesn't show that the source is right.
+
+A research run takes about 2 to 4 minutes for a question with four parts.
 
 ### Tools
 
@@ -82,6 +106,7 @@ Limits keep a run from going on forever: 30 steps, 45 minutes, and 3 sections of
 | `knowledge_search`                                   | Searches your files in `knowledge/`                   |
 | `web_search`, `web_read_page`                        | Searches the web, and reads pages as clean text       |
 | `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only           |
+| `finish_with_file`                                   | Hands in a workspace file as the final result         |
 | `run_command`                                        | Runs a command in the sandbox (see [Safety](#safety)) |
 
 ### Your notes (RAG)
@@ -157,9 +182,11 @@ The unattended agent runs with no one approving its actions, so its limits are e
 - Commands run in a Docker container with no network access, a read-only system, no admin rights, and memory and process limits. The container can only see the run's workspace, and commands time out after 2 minutes.
 - File tools can't leave the workspace or touch `.git` folders.
 - `--project` copies your folder without `.git`, `.env` files, `node_modules`, or virtual environments, so the agent never sees those.
-- `web_read_page` refuses local and private network addresses.
+- `web_read_page` refuses local and private network addresses. The check is made on the address it actually connects to, so a site can't pass it with one address and then switch to another.
 
-One risk remains. The agent reads untrusted web pages and your private notes in the same run, so a malicious page could try to trick it into putting your notes in a web address it then visits. In testing it ignored planted instructions, but that isn't a guarantee. Don't keep passwords or keys in `knowledge/`, and use `--no-web` for tasks about private notes.
+One risk remains with `agent run`. The agent reads untrusted web pages and your private notes in the same run, so a malicious page could try to trick it into putting your notes in a web address it then visits. In testing it ignored planted instructions, but that isn't a guarantee. Don't keep passwords or keys in `knowledge/`, and use `--no-web` for tasks about private notes.
+
+`agent research` closes most of that gap by construction. The model never writes a web address to open: it can only pick search results by number. The search queries are written from your task alone, before any page or note has been read. What remains is that your task's sub-questions are sent to the search engine, as with any search.
 
 For the interactive agent:
 
@@ -171,7 +198,7 @@ In both agents, search queries and page requests reach the internet, though the 
 
 ## Improving it
 
-`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
+`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. The tasks cover notes, web research, code, long documents, planted instructions, and tidying a folder. Add `"mode": "research"` to a task to run it with `agent research`. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
 
 A good way to improve the agent over time:
 
@@ -186,6 +213,7 @@ Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted mod
 | To change                              | Edit                                                                                                                     |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py)                                                                                         |
+| Research runs: prompts and workflow    | [agent/research.py](agent/research.py)                                                                                   |
 | Unattended agent: limits and models    | [agent/config.py](agent/config.py), or `AGENT_*` environment variables                                                   |
 | Interactive agent: permissions         | [opencode.jsonc](opencode.jsonc)                                                                                         |
 | Interactive agent: modes               | [.opencode/agents/](.opencode/agents/)                                                                                   |

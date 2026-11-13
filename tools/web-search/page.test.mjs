@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertPublicUrl, htmlToText, isPrivateAddress, PAGE_CHARS, sliceText } from "./page.mjs";
+import {
+  assertPublicUrl,
+  htmlToText,
+  isPrivateAddress,
+  PAGE_CHARS,
+  publicLookup,
+  readPage,
+  sliceText,
+} from "./page.mjs";
 
 test("private and loopback addresses are recognized", () => {
   for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1"]) {
@@ -17,6 +25,16 @@ test("local and non-web URLs are refused", async () => {
   }
 });
 
+test("a name that resolves to a private address is refused when connecting", async () => {
+  const resolve = (host, options) =>
+    new Promise((done) => publicLookup(host, options, (error, result) => done({ error, result })));
+  for (const options of [{}, { all: true }]) {
+    const { error } = await resolve("localhost", options);
+    assert.match(error.message, /private network address/);
+  }
+  await assert.rejects(readPage("http://localhost:11434/"), /private network address/);
+});
+
 test("html is reduced to the article text", () => {
   const paragraph = "<p>The actual article body is long enough to count as the main content of this page. </p>".repeat(10);
   const html = `<html><head><title>My title</title><script>alert(1)</script></head>
@@ -25,6 +43,19 @@ test("html is reduced to the article text", () => {
   assert.equal(title, "My title");
   assert.match(text, /actual article body/);
   assert.doesNotMatch(text, /alert\(1\)/);
+});
+
+test("a page that is mostly lists keeps its lists", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => `<tr><td><a href="/r/${i}">Release 3.${i}.0</a></td><td>2026-01-${i}</td></tr>`).join("");
+  const aside = "<p>Release files are signed, and this long paragraph explains how to verify a download in careful detail. </p>".repeat(8);
+  const html = `<html><head><title>Downloads</title></head><body><nav><a href="/">Home</a></nav>
+    <main><h1>Download the latest version</h1><p><a href="/latest">Download Version 9.8.7</a></p>
+    <table>${rows}</table><div class="article"><h2>Verifying</h2>${aside}</div></main>
+    <footer>Copyright notice</footer></body></html>`;
+  const { text } = htmlToText(html, "https://example.com/downloads");
+  assert.match(text, /Version 9\.8\.7/);
+  assert.match(text, /Release 3\.59\.0/);
+  assert.doesNotMatch(text, /Copyright notice|Home/);
 });
 
 test("long text is split with a continuation note", () => {

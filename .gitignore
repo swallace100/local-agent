@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+openclaude-main.zip
 
 # Node
 node_modules/

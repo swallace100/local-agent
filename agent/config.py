@@ -32,6 +32,14 @@ class Settings:
     max_sections_per_page: int = 3
     command_timeout_seconds: int = 120
 
+    # Research runs (agent research). Their steps are small model calls, so more are allowed.
+    research_max_steps: int = 60
+    max_questions: int = 5
+    search_results: int = 6
+    pages_per_question: int = 2
+    research_sections_per_page: int = 2
+    facts_per_source: int = 4
+
     @property
     def checkpoint_db(self) -> Path:
         return self.data_dir / "checkpoints.sqlite"
