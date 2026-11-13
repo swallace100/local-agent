@@ -40,6 +40,11 @@ class Settings:
     research_sections_per_page: int = 2
     facts_per_source: int = 4
 
+    # Organize runs (agent organize).
+    organize_max_files: int = 2_000
+    organize_batch: int = 25
+    organize_max_folders: int = 12
+
     @property
     def checkpoint_db(self) -> Path:
         return self.data_dir / "checkpoints.sqlite"
