@@ -90,7 +90,7 @@ When the conversation outgrows the context window, the oldest tool results are l
 split -> gather (once per sub-question) -> write <-> review
 ```
 
-1. **Split:** the model breaks the task into at most 4 sub-questions.
+1. **Split:** the model breaks the task into at most 5 sub-questions, each asking for one thing.
 2. **Gather:** for each sub-question, code searches your notes and the web. The model picks which results to read by number. For each page, the model lists facts with a quote for each one, and code keeps a fact only if its quote appears word for word in the page.
 3. **Write:** the model writes the report from the kept notes only. It never sees whole pages at this point.
 4. **Review:** code checks that every URL cited is one the notes came from. Then the model checks the report against the notes.

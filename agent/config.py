@@ -34,7 +34,7 @@ class Settings:
 
     # Research runs (agent research). Their steps are small model calls, so more are allowed.
     research_max_steps: int = 60
-    max_questions: int = 4
+    max_questions: int = 5
     search_results: int = 6
     pages_per_question: int = 2
     research_sections_per_page: int = 2

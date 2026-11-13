@@ -99,6 +99,21 @@ async def test_citing_an_unread_url_forces_a_revision():
     assert "never-opened.org" in feedback.content
 
 
+async def test_reading_pages_but_citing_none_forces_a_revision():
+    state, _ = await run(
+        [
+            AIMessage("plan"),
+            call("web_read_page", {"url": "https://a.org/x"}, "1"),
+            AIMessage("The answer is 42."),
+            AIMessage("The answer is 42 (https://a.org/x)."),
+            AIMessage("PASS"),
+        ]
+    )
+    assert state["status"] == "done"
+    assert state["revisions"] == 1
+    assert state["report"] == "The answer is 42 (https://a.org/x)."
+
+
 async def test_gives_up_with_warning_after_max_revisions():
     state, _ = await run([AIMessage("plan"), AIMessage("See https://fake.org/a")])
     assert state["status"] == "done_with_warnings"

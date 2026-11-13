@@ -34,6 +34,8 @@ SPLIT_PROMPT = """You break a research task into sub-questions for a web search 
 Write at most {count} sub-questions, one per line.
 
 Rules:
+- Each sub-question asks for exactly one thing about one subject. Never join two requests \
+with "and": "When was X first released?" and "What license does X use?" are separate.
 - Each sub-question must be answerable on its own from one or two pages.
 - Name the subject in full in every sub-question. Don't use "it" or "they".
 - Together they must cover everything the task asks for, with no overlap.

@@ -311,6 +311,11 @@ def build_graph(
                 "You cited URLs you never opened. Open each with web_read_page, or remove "
                 "the claim and citation:\n" + "\n".join(unread)
             )
+        elif report and read_urls(state["messages"]) and not URL_PATTERN.search(report):
+            issues.append(
+                "You opened web pages but the result cites none of them. After each fact, "
+                "give the URL of the page it came from."
+            )
         if not issues:
             verdict = await model.ainvoke(
                 [

@@ -45,6 +45,19 @@ test("html is reduced to the article text", () => {
   assert.doesNotMatch(text, /alert\(1\)/);
 });
 
+test("a page that is mostly lists keeps its lists", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => `<tr><td><a href="/r/${i}">Release 3.${i}.0</a></td><td>2026-01-${i}</td></tr>`).join("");
+  const aside = "<p>Release files are signed, and this long paragraph explains how to verify a download in careful detail. </p>".repeat(8);
+  const html = `<html><head><title>Downloads</title></head><body><nav><a href="/">Home</a></nav>
+    <main><h1>Download the latest version</h1><p><a href="/latest">Download Version 9.8.7</a></p>
+    <table>${rows}</table><div class="article"><h2>Verifying</h2>${aside}</div></main>
+    <footer>Copyright notice</footer></body></html>`;
+  const { text } = htmlToText(html, "https://example.com/downloads");
+  assert.match(text, /Version 9\.8\.7/);
+  assert.match(text, /Release 3\.59\.0/);
+  assert.doesNotMatch(text, /Copyright notice|Home/);
+});
+
 test("long text is split with a continuation note", () => {
   const text = "x".repeat(PAGE_CHARS + 100);
   assert.match(sliceText(text, 0), new RegExp(`offset=${PAGE_CHARS}\\.\\]$`));

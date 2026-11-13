@@ -100,7 +100,8 @@ def file_tools(workspace: Path) -> list[BaseTool]:
     @tool
     def finish_with_file(path: str) -> str:
         """End the task with a workspace file as your final result. Use this instead of a
-        reply when the result is a document you saved to a file. The user reads the whole file."""
+        reply only when the result is a document you already saved with write_file. The user
+        reads the whole file. For a short answer, just reply."""
         target = _resolve(workspace, path)
         if not target.is_file():
             raise ToolException(f"No such file: {path}")

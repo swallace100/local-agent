@@ -12,7 +12,11 @@ export const PAGE_CHARS = 8_000;
 const MAX_BYTES = 5_000_000;
 const MAX_REDIRECTS = 5;
 const TIMEOUT_MS = 20_000;
-const USER_AGENT = "Mozilla/5.0 (compatible; local-research-agent/1.0)";
+// Measured on 13 ordinary pages, Readability kept at least 57% of the text. On python.org's
+// downloads page it kept 15% and lost the current version.
+const MIN_ARTICLE_SHARE = 0.4;
+const PAGE_FURNITURE = "script, style, noscript, template, svg, nav, header, footer, aside, form, iframe";
+const USER_AGENT ="Mozilla/5.0 (compatible; local-research-agent/1.0)";
 
 const privateRanges = new BlockList();
 for (const [net, prefix] of [
@@ -87,11 +91,26 @@ async function fetchPublic(startUrl) {
   throw new Error(`Too many redirects from ${startUrl}`);
 }
 
+const squash = (text) => (text ?? "").replace(/\s+/g, " ").trim();
+
+// The page's main content with the navigation and other furniture taken out.
+function wholePage(document) {
+  const root = (document.querySelector("main, [role=main]") ?? document.body)?.cloneNode(true);
+  root?.querySelectorAll(PAGE_FURNITURE).forEach((node) => node.remove());
+  return root;
+}
+
 export function htmlToText(html, url) {
   const dom = new JSDOM(html, { url, virtualConsole: new VirtualConsole() });
+  // Copied first, because Readability changes the document it reads.
+  const whole = wholePage(dom.window.document);
   const article = new Readability(dom.window.document).parse();
   const title = article?.title || dom.window.document.title || "";
-  const content = article?.content ?? dom.window.document.body?.innerHTML ?? "";
+  // Readability looks for one article. On a page that is mostly lists and tables, such as
+  // a downloads page, it can keep a side note and drop the rest, so use the whole page then.
+  const keptEnough =
+    article && squash(article.textContent).length >= MIN_ARTICLE_SHARE * squash(whole?.textContent).length;
+  const content = keptEnough ? article.content : (whole?.innerHTML ?? "");
   const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
   turndown.remove(["script", "style", "noscript", "img", "svg"]);
   return { title, text: turndown.turndown(content).replace(/\n{3,}/g, "\n\n").trim() };
