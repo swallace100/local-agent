@@ -9,7 +9,7 @@ import pytest
 from langchain_core.tools import ToolException
 
 from agent.config import Settings
-from agent.runner import _ignore_for_copy, _write_patch
+from agent.runner import _files_note, _ignore_for_copy, _mode, _write_patch
 from agent.tools import PageBudget, _resolve, file_tools, sandbox_args
 
 
@@ -57,6 +57,31 @@ def test_write_read_and_edit(tmp_path):
 def test_tool_errors_are_returned_to_the_model(tmp_path):
     result = tools_by_name(tmp_path)["read_file"].invoke({"path": "../x"})
     assert "outside the workspace" in result
+
+
+def test_handing_in_a_file_returns_all_of_it(tmp_path):
+    finish = tools_by_name(tmp_path)["finish_with_file"]
+    (tmp_path / "long.md").write_bytes(b"line\n" * 3000)
+    assert finish.invoke({"path": "long.md"}) == "line\n" * 3000, "not cut to one section"
+    (tmp_path / "empty.md").write_text("  \n")
+    assert "empty" in finish.invoke({"path": "empty.md"})
+    assert "No such file" in finish.invoke({"path": "missing.md"})
+    assert "outside the workspace" in finish.invoke({"path": "../x.md"})
+    (tmp_path / "huge.md").write_text("x" * 50_000)
+    assert "too long" in finish.invoke({"path": "huge.md"})
+
+
+def test_report_points_to_files_left_in_the_workspace(tmp_path):
+    assert _files_note(tmp_path) == ""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub/a.txt").write_text("x")
+    assert "- sub/a.txt" in _files_note(tmp_path)
+
+
+def test_runs_saved_before_modes_existed_still_resume_correctly():
+    assert _mode({"moltbook": True}) == "moltbook"
+    assert _mode({"use_web": True}) == "agent"
+    assert _mode({"mode": "research"}) == "research"
 
 
 def test_edit_requires_a_unique_match(tmp_path):

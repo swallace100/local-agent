@@ -18,6 +18,8 @@ from agent.config import ROOT, Settings
 from agent.rag import Knowledge
 
 MAX_OUTPUT_CHARS = 8_000
+# A file handed in as the result is read by the reviewer in one piece, so it must fit.
+MAX_RESULT_CHARS = 40_000
 WEB_SERVER = ROOT / "tools" / "web-search" / "server.mjs"
 
 
@@ -95,9 +97,27 @@ def file_tools(workspace: Path) -> list[BaseTool]:
         _write(target, content.replace(old_text, new_text))
         return f"Edited {path}"
 
-    for t in (list_files, read_file, write_file, edit_file):
+    @tool
+    def finish_with_file(path: str) -> str:
+        """End the task with a workspace file as your final result. Use this instead of a
+        reply when the result is a document you saved to a file. The user reads the whole file."""
+        target = _resolve(workspace, path)
+        if not target.is_file():
+            raise ToolException(f"No such file: {path}")
+        content = _read(target)
+        if not content.strip():
+            raise ToolException(f"{path} is empty. Write the result to it first.")
+        if len(content) > MAX_RESULT_CHARS:
+            raise ToolException(
+                f"{path} is too long to hand in ({len(content)} characters, and the limit is "
+                f"{MAX_RESULT_CHARS}). Reply with a summary that names the file instead."
+            )
+        return content
+
+    all_tools = [list_files, read_file, write_file, edit_file, finish_with_file]
+    for t in all_tools:
         t.handle_tool_error = True
-    return [list_files, read_file, write_file, edit_file]
+    return all_tools
 
 
 def sandbox_args(settings: Settings, workspace: Path, name: str, command: str) -> list[str]:

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertPublicUrl, htmlToText, isPrivateAddress, PAGE_CHARS, sliceText } from "./page.mjs";
+import {
+  assertPublicUrl,
+  htmlToText,
+  isPrivateAddress,
+  PAGE_CHARS,
+  publicLookup,
+  readPage,
+  sliceText,
+} from "./page.mjs";
 
 test("private and loopback addresses are recognized", () => {
   for (const address of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1"]) {
@@ -15,6 +23,16 @@ test("local and non-web URLs are refused", async () => {
   for (const url of ["http://127.0.0.1:8888/", "http://localhost:11434/", "http://[::1]/", "http://169.254.169.254/latest", "file:///C:/secrets.txt"]) {
     await assert.rejects(assertPublicUrl(new URL(url)), undefined, url);
   }
+});
+
+test("a name that resolves to a private address is refused when connecting", async () => {
+  const resolve = (host, options) =>
+    new Promise((done) => publicLookup(host, options, (error, result) => done({ error, result })));
+  for (const options of [{}, { all: true }]) {
+    const { error } = await resolve("localhost", options);
+    assert.match(error.message, /private network address/);
+  }
+  await assert.rejects(readPage("http://localhost:11434/"), /private network address/);
 });
 
 test("html is reduced to the article text", () => {

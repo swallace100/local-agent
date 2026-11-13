@@ -1,4 +1,4 @@
-"""Command line: agent run | resume | runs | index | search | eval | moltbook"""
+"""Command line: agent run | research | resume | runs | index | search | eval | moltbook"""
 
 import argparse
 import asyncio
@@ -46,6 +46,13 @@ def main() -> None:
     run.add_argument("--no-web", action="store_true", help="Turn off web search and page reading")
     run.add_argument("--max-minutes", type=int, help="Time limit for this run")
 
+    research = commands.add_parser(
+        "research", help="Research a question step by step and write a cited report"
+    )
+    research.add_argument("task")
+    research.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
+    research.add_argument("--max-minutes", type=int, help="Time limit for this run")
+
     resume = commands.add_parser("resume", help="Continue an interrupted run")
     resume.add_argument("run_id")
 
@@ -64,14 +71,17 @@ def main() -> None:
     args = parser.parse_args()
     settings = Settings()
 
+    if args.command in ("run", "research") and args.max_minutes:
+        settings = replace(settings, max_minutes=args.max_minutes)
+
     if args.command == "run":
-        if args.max_minutes:
-            settings = replace(settings, max_minutes=args.max_minutes)
         if args.project and not args.project.is_dir():
             raise SystemExit(f"No such folder: {args.project}")
         _print_result(asyncio.run(start_run(settings, args.task, args.project, not args.no_web)))
+    elif args.command == "research":
+        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="research")))
     elif args.command == "moltbook":
-        _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, moltbook=True)))
+        _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, mode="moltbook")))
     elif args.command == "resume":
         _print_result(asyncio.run(resume_run(settings, args.run_id)))
     elif args.command == "runs":

@@ -1,9 +1,12 @@
 // Fetches a web page and reduces it to readable text that fits a small context window.
 import { BlockList, isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns";
 import { lookup } from "node:dns/promises";
 import { Readability } from "@mozilla/readability";
 import { JSDOM, VirtualConsole } from "jsdom";
 import TurndownService from "turndown";
+// undici's own fetch, so that it and the Agent below are the same version.
+import { Agent, fetch } from "undici";
 
 export const PAGE_CHARS = 8_000;
 const MAX_BYTES = 5_000_000;
@@ -48,11 +51,28 @@ export async function assertPublicUrl(url) {
   }
 }
 
+// Checks the addresses a connection is about to use. assertPublicUrl alone isn't enough,
+// because a hostile DNS server can answer with a public address for that check and a
+// private one for the connection that follows.
+export function publicLookup(hostname, options, callback) {
+  dnsLookup(hostname, { ...options, all: true }, (error, addresses) => {
+    if (error) return callback(error);
+    if (addresses.some((entry) => isPrivateAddress(entry.address))) {
+      return callback(new Error(`Refusing to read a private network address: ${hostname}`));
+    }
+    if (options.all) return callback(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+const publicOnly = new Agent({ connect: { lookup: publicLookup } });
+
 async function fetchPublic(startUrl) {
   let url = new URL(startUrl);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertPublicUrl(url);
     const response = await fetch(url, {
+      dispatcher: publicOnly,
       redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: { "user-agent": USER_AGENT, accept: "text/html,text/plain;q=0.9,*/*;q=0.5" },
