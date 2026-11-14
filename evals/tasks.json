@@ -16,8 +16,11 @@
     "use_web": false,
     "checks": [
       { "type": "tool_used", "name": "knowledge_search" },
-      { "type": "not_contains", "text": "postgres" },
-      { "type": "not_contains", "text": "mysql" }
+      {
+        "type": "matches",
+        "pattern": "(do not|don't|does not|doesn't|not) (say|mention|specify|state|name)|no mention"
+      },
+      { "type": "not_matches", "pattern": "(uses|runs on|is backed by|stores (it|them|data) in) (a )?(postgres|mysql|mongo|sqlite)" }
     ]
   },
   {

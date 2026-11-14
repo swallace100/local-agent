@@ -189,7 +189,8 @@ def knowledge_tool(knowledge: Knowledge) -> BaseTool:
     @tool
     async def knowledge_search(query: str) -> str:
         """Search the user's private knowledge folder. Try this first for questions that
-        could be about the user's own projects, notes or documents."""
+        could be about the user's own projects, notes or documents. The passages returned are
+        all you can see of those files: they can't be opened with read_file."""
         results = await asyncio.to_thread(knowledge.search, query)
         if not results:
             return "Nothing relevant in the knowledge folder."

@@ -33,6 +33,9 @@ def _check(
     if kind == "matches":
         found = re.search(check["pattern"], report, re.IGNORECASE)
         return bool(found), f"report matches {check['pattern']!r}"
+    if kind == "not_matches":
+        found = re.search(check["pattern"], report, re.IGNORECASE)
+        return not found, f"report doesn't match {check['pattern']!r}"
     if kind == "min_chars":
         return len(report) >= check["value"], f"report has at least {check['value']} characters"
     if kind == "status":
