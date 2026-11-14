@@ -15,7 +15,9 @@ from agent.memory import Memory
 from agent.moltbook import digest_task
 from agent.organize import DEFAULT_INSTRUCTION, MOVES_FILE, apply_moves, scan, undo_moves, why_not
 from agent.rag import Knowledge
-from agent.runner import resume_run, start_run
+from agent import moltbook_commands
+from agent.moltbook_account import load_key
+from agent.runner import make_model, preflight, resume_run, start_run
 from agent.tools import source_label
 
 
@@ -80,6 +82,32 @@ class _Tee:
 
     def isatty(self) -> bool:
         return False
+
+
+def _moltbook_command(settings: Settings, args) -> None:
+    if args.action == "join":
+        moltbook_commands.join(args.name, args.description)
+    elif args.action == "status":
+        moltbook_commands.status()
+    elif args.action == "outbox":
+        moltbook_commands.show(settings)
+    elif args.action == "reject":
+        moltbook_commands.reject(settings, args.id)
+    elif args.action == "inbox":
+        moltbook_commands.inbox()
+    elif args.action == "draft":
+        saved = load_key()
+        if not saved:
+            raise SystemExit('The agent hasn\'t joined Moltbook yet. Run: agent moltbook join "Name" "Description"')
+        preflight(settings, need_web=False, need_docker=False)
+        asyncio.run(
+            moltbook_commands.draft(
+                settings, make_model(settings), saved[1], args.post, args.new, args.submolt, args.reply_to
+            )
+        )
+    elif args.action == "approve":
+        preflight(settings, need_web=False, need_docker=False)
+        asyncio.run(moltbook_commands.approve(settings, make_model(settings), args.id, args.edit))
 
 
 def _queue_command(settings: Settings, args) -> None:
@@ -194,8 +222,27 @@ def main() -> None:
     evaluate.add_argument("--only", help="Run a single eval by ID")
     evaluate.add_argument("--no-web", action="store_true", help="Skip the tasks that search the web")
 
-    moltbook = commands.add_parser("moltbook", help="Write a read-only digest of Moltbook")
+    moltbook = commands.add_parser(
+        "moltbook", help="Write a digest of Moltbook, or manage what the agent says there"
+    )
     moltbook.add_argument("--topic", help="Focus the digest on one subject")
+    social = moltbook.add_subparsers(dest="action")
+    join = social.add_parser("join", help="Register the agent on Moltbook")
+    join.add_argument("name")
+    join.add_argument("description")
+    social.add_parser("status", help="Check whether you have claimed the agent's account")
+    draft = social.add_parser("draft", help="Have the agent draft a comment or a post for you to approve")
+    draft.add_argument("post", nargs="?", help="The ID or address of the post to comment on")
+    draft.add_argument("--reply-to", help="The ID of a comment to reply to, within that post")
+    draft.add_argument("--new", help="Draft a new post instead, about what you describe here")
+    draft.add_argument("--submolt", default="general", help="With --new: the community to post in")
+    social.add_parser("outbox", help="Show the drafts waiting for you")
+    approve = social.add_parser("approve", help="Post a draft")
+    approve.add_argument("id", type=int)
+    approve.add_argument("--edit", help="Post this text instead of the draft's")
+    reject = social.add_parser("reject", help="Drop a draft")
+    reject.add_argument("id", type=int)
+    social.add_parser("inbox", help="Show replies to what the agent has posted")
 
     args = parser.parse_args()
     settings = Settings()
@@ -244,6 +291,8 @@ def main() -> None:
             print(f"  Found {doc.metadata['date']} while researching: {question}")
         if not found:
             print("Nothing from earlier research matches that.")
+    elif args.command == "moltbook" and args.action:
+        _moltbook_command(settings, args)
     elif args.command == "moltbook":
         _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, mode="moltbook")))
     elif args.command == "resume":

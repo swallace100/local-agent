@@ -67,7 +67,7 @@ With `--project`, the agent works on a copy of your folder and never changes the
 | `agent index`          | Update the search index after changing `knowledge/`                |
 | `agent search "query"` | Search your notes directly, to check what the agent would find     |
 | `agent eval`           | Score the agent on fixed tasks (see [Improving it](#improving-it)) |
-| `agent moltbook` | Write a read-only digest of Moltbook (see [Moltbook digest](#moltbook-digest)) |
+| `agent moltbook` | Write a read-only digest of Moltbook (see [Moltbook digest](#moltbook-digest)), or draft and approve posts (see [Posting on Moltbook](#posting-on-moltbook)) |
 
 ### How a run works
 
@@ -235,7 +235,39 @@ Folder tidy-ups can't be queued, because their plan needs reading before anythin
 
 The digest goes in `runs/<id>/report.md`, like any other run, and has a section for posts that tried to instruct or trick agents. If several bots keep mentioning the same product in the comments, a section at the end counts them. You only need Ollama running.
 
-It can only read. It has no account or API key, and no code that can post, comment, vote, or sign up. Because everything it reads is written by other bots, it runs with only its three Moltbook tools, so it can't reach your notes, files, commands, or the rest of the web.
+The digest can only read. It doesn't use the agent's account or key, and it has no tool that can post, comment, vote, or sign up. Because everything it reads is written by other bots, it runs with only its three Moltbook tools, so it can't reach your notes, files, commands, or the rest of the web.
+
+### Posting on Moltbook
+
+The agent can have its own Moltbook account. It never posts by itself: it drafts, and you approve each draft.
+
+```powershell
+.venv\Scripts\agent moltbook join "AgentName" "A one-line description"
+.venv\Scripts\agent moltbook status
+.venv\Scripts\agent moltbook draft <post ID or address>
+.venv\Scripts\agent moltbook draft --new "what the post should be about"
+.venv\Scripts\agent moltbook outbox
+.venv\Scripts\agent moltbook approve 1
+.venv\Scripts\agent moltbook reject 1
+.venv\Scripts\agent moltbook inbox
+```
+
+1. **Join:** `join` registers the agent and prints a claim link. You open it, verify an email address, and post a tweet with the code shown. `status` shows the link again and tells you when the account is claimed.
+2. **Draft:** the model is given one post and writes a comment, or says it has nothing to add. For this step it has no tools, notes, files or key.
+3. **Check:** code refuses a draft that contains a link, a web or email address, a file path, a command, or anything that looks like a key.
+4. **Approve:** you read the draft in the outbox. `approve` posts it, and `--edit "text"` posts your wording instead.
+
+Moltbook sets a small maths puzzle before it shows what an agent wrote. The agent works it out and shows you its answer before sending, because ten wrong answers in a row suspend the account. Press Enter to accept, or type the right number.
+
+Safeguards:
+
+- The key is kept in `.config\moltbook\credentials.json` in your home folder, outside this project. It is only sent to Moltbook's own API, and it is never shown, logged, or given to the model.
+- The agent sends at most one thing a minute and ten a day, well under Moltbook's limits.
+- `inbox` shows who replied to the agent's posts. It leaves out the parts of Moltbook's reply that tell an agent what to do next.
+
+Moltbook's own instructions ask agents to fetch a file from its website every 30 minutes and follow it, and to upvote and follow on their own. This agent does none of that. Following instructions fetched from a website would let that website steer the agent.
+
+What the agent may say about itself is the `ABOUT` text in [agent/outbox.py](agent/outbox.py). Edit it to change that.
 
 ## Interactive agent
 
