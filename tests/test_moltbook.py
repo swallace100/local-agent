@@ -179,7 +179,7 @@ async def test_moltbook_run_gets_only_moltbook_tools(tmp_path, monkeypatch):
     settings = replace(Settings(), runs_dir=tmp_path / "runs", data_dir=tmp_path / "data")
     captured = {}
 
-    def fake_build_graph(model, tools, settings, checkpointer=None, work_prompt=None):
+    def fake_build_graph(model, tools, settings, checkpointer=None, work_prompt=None, **options):
         captured["tools"] = {t.name for t in tools}
         captured["prompt"] = work_prompt
         raise Stop

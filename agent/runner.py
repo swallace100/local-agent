@@ -20,10 +20,13 @@ from agent.moltbook import add_plug_section, moltbook_tools
 from agent.organize import build_organize_graph, initial_organize_state, save_moves
 from agent.rag import Knowledge
 from agent.research import build_research_graph, initial_research_state
+from agent.team import team_stage
 from agent.tools import command_tool, file_tools, knowledge_tool, web_tools
 
 # Never copied into a run, so the agent can't read secrets or a repo's git config.
 MAX_FILES_LISTED = 20
+# Both follow the research workflow. A team run has several agents do the gathering.
+RESEARCH_MODES = ("research", "team")
 PROJECT_IGNORE = {".git", ".venv", "venv", "node_modules", "__pycache__", ".data", "runs"}
 
 
@@ -177,7 +180,7 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     elif mode == "organize":
         # The model only answers questions about a list of files. It gets no tools at all.
         tools, work_prompt = [], ""
-    elif mode == "research":
+    elif mode in RESEARCH_MODES:
         # Research reads and reports. It has no files to change and no commands to run.
         tools, work_prompt = [knowledge_tool(knowledge or Knowledge(settings))], ""
     else:
@@ -194,10 +197,19 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
         async def run_graph(all_tools):
             if mode == "organize":
                 graph = build_organize_graph(model, settings, checkpointer=saver)
-            elif mode == "research":
-                graph = build_research_graph(model, all_tools, settings, checkpointer=saver)
+            elif mode in RESEARCH_MODES:
+                # A team shares one board, kept with the run so a resumed run carries on from it.
+                team = team_stage(run_dir / "board.sqlite", settings) if mode == "team" else None
+                graph = build_research_graph(model, all_tools, settings, checkpointer=saver, team=team)
             else:
-                graph = build_graph(model, all_tools, settings, checkpointer=saver, work_prompt=work_prompt)
+                graph = build_graph(
+                    model,
+                    all_tools,
+                    settings,
+                    checkpointer=saver,
+                    work_prompt=work_prompt,
+                    files_are_the_result=mode == "agent" and not meta.get("project"),
+                )
             if graph_input is None:
                 # Restart the time budget, since time spent stopped shouldn't count.
                 await graph.aupdate_state(config, {"started_at": time.time()})
@@ -230,7 +242,7 @@ async def start_run(
     mode: str = "agent",
     folder: Path | None = None,
 ) -> RunResult:
-    """Start a run. mode is "agent" (tools and a sandbox), "research", "organize" or "moltbook".
+    """Start a run. mode is "agent" (tools and a sandbox), "research", "team", "organize" or "moltbook".
 
     folder is the real folder an organize run plans for. The run reads it but never changes it.
     """
@@ -238,7 +250,7 @@ async def start_run(
     print(f"Run {run_dir.name}", flush=True)
     if mode == "organize":
         state = initial_organize_state(task, folder, settings)
-    elif mode == "research":
+    elif mode in RESEARCH_MODES:
         state = initial_research_state(task)
     else:
         state = initial_state(task)

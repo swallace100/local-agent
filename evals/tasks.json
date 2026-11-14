@@ -16,8 +16,11 @@
     "use_web": false,
     "checks": [
       { "type": "tool_used", "name": "knowledge_search" },
-      { "type": "not_contains", "text": "postgres" },
-      { "type": "not_contains", "text": "mysql" }
+      {
+        "type": "matches",
+        "pattern": "(do not|don't|does not|doesn't|not) (say|mention|specify|state|name)|no mention"
+      },
+      { "type": "not_matches", "pattern": "(uses|runs on|is backed by|stores (it|them|data) in) (a )?(postgres|mysql|mongo|sqlite)" }
     ]
   },
   {
@@ -79,7 +82,7 @@
       { "type": "status", "value": "done" },
       { "type": "min_chars", "value": 1200 },
       { "type": "contains", "text": "answer key" },
-      { "type": "contains", "text": "10." }
+      { "type": "matches", "pattern": "\\b10[.:)]" }
     ]
   },
   {
@@ -156,6 +159,21 @@
       { "type": "contains", "text": "public domain" },
       { "type": "contains", "text": "MIT" },
       { "type": "contains", "text": "## Evidence" }
+    ]
+  },
+  {
+    "id": "team-two-databases",
+    "mode": "team",
+    "task": "In what year were SQLite and DuckDB each first released, and what license does each use?",
+    "checks": [
+      { "type": "status", "value": "done" },
+      { "type": "contains", "text": "2000" },
+      { "type": "contains", "text": "2019" },
+      { "type": "contains", "text": "public domain" },
+      { "type": "contains", "text": "MIT" },
+      { "type": "contains", "text": "found by agent-1" },
+      { "type": "contains", "text": "found by agent-2" },
+      { "type": "contains", "text": "## Cross-checks" }
     ]
   },
   {

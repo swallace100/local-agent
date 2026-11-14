@@ -4,6 +4,7 @@ Checks run in code and look at what the agent actually produced, not at its own 
 """
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from agent.rag import Knowledge
 from agent.runner import start_run
 
 EVALS_DIR = ROOT / "evals"
+EVAL_SEARCH_PAUSE_SECONDS = 15.0
 
 
 def _check(
@@ -28,6 +30,12 @@ def _check(
         return check["text"].lower() in report.lower(), f"report contains {check['text']!r}"
     if kind == "not_contains":
         return check["text"].lower() not in report.lower(), f"report omits {check['text']!r}"
+    if kind == "matches":
+        found = re.search(check["pattern"], report, re.IGNORECASE)
+        return bool(found), f"report matches {check['pattern']!r}"
+    if kind == "not_matches":
+        found = re.search(check["pattern"], report, re.IGNORECASE)
+        return not found, f"report doesn't match {check['pattern']!r}"
     if kind == "min_chars":
         return len(report) >= check["value"], f"report has at least {check['value']} characters"
     if kind == "status":
@@ -51,8 +59,10 @@ def _check(
     raise ValueError(f"Unknown check type: {kind}")
 
 
-async def run_evals(settings: Settings, only: str | None = None) -> int:
+async def run_evals(settings: Settings, only: str | None = None, skip_web: bool = False) -> int:
     tasks = json.loads((EVALS_DIR / "tasks.json").read_text(encoding="utf-8"))
+    if skip_web:
+        tasks = [t for t in tasks if not t.get("use_web", True)]
     if only:
         tasks = [t for t in tasks if t["id"] == only]
         if not tasks:
@@ -65,7 +75,12 @@ async def run_evals(settings: Settings, only: str | None = None) -> int:
             settings, folder=EVALS_DIR / "fixtures" / "knowledge", store_dir=Path(temp) / "chroma"
         )
         knowledge.index()
-        run_settings = replace(settings, runs_dir=settings.runs_dir / "evals")
+        # Evals search far more often than normal use, so they wait longer between searches.
+        run_settings = replace(
+            settings,
+            runs_dir=settings.runs_dir / "evals",
+            search_pause_seconds=max(settings.search_pause_seconds, EVAL_SEARCH_PAUSE_SECONDS),
+        )
 
         for task in tasks:
             print(f"\n=== {task['id']} ===", flush=True)

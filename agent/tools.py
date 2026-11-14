@@ -5,6 +5,7 @@ has no network and can only see the workspace.
 """
 
 import asyncio
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -188,7 +189,8 @@ def knowledge_tool(knowledge: Knowledge) -> BaseTool:
     @tool
     async def knowledge_search(query: str) -> str:
         """Search the user's private knowledge folder. Try this first for questions that
-        could be about the user's own projects, notes or documents."""
+        could be about the user's own projects, notes or documents. The passages returned are
+        all you can see of those files: they can't be opened with read_file."""
         results = await asyncio.to_thread(knowledge.search, query)
         if not results:
             return "Nothing relevant in the knowledge folder."
@@ -215,6 +217,23 @@ class PageBudget:
         self.sections_read[key] = used + 1
 
 
+class Pacer:
+    """Spaces out web searches. Search engines block a client that asks too often."""
+
+    def __init__(self, gap_seconds: float):
+        self.gap_seconds = gap_seconds
+        self._lock = asyncio.Lock()
+        self._last = float("-inf")
+
+    async def wait(self) -> None:
+        # Held while sleeping, so searches from several agents queue up instead of bunching.
+        async with self._lock:
+            delay = self._last + self.gap_seconds - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last = time.monotonic()
+
+
 @asynccontextmanager
 async def web_tools(settings: Settings) -> AsyncIterator[list[BaseTool]]:
     """Connect to the same web server OpenCode uses, so there's one implementation."""
@@ -224,6 +243,7 @@ async def web_tools(settings: Settings) -> AsyncIterator[list[BaseTool]]:
         env={"SEARXNG_URL": settings.searxng_url},
     )
     budget = PageBudget(settings.max_sections_per_page)
+    pacer = Pacer(settings.search_pause_seconds)
     async with Client(transport) as client:
 
         async def call(name: str, arguments: dict) -> str:
@@ -236,6 +256,7 @@ async def web_tools(settings: Settings) -> AsyncIterator[list[BaseTool]]:
         async def web_search(query: str, max_results: int = 5) -> str:
             """Search the web. Returns titles, URLs and short snippets. Snippets are not
             enough to cite: read promising pages with web_read_page."""
+            await pacer.wait()
             return await call("search", {"query": query, "max_results": max_results})
 
         async def web_read_page(url: str, offset: int = 0) -> str:
