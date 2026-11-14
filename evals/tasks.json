@@ -21,6 +21,29 @@
     ]
   },
   {
+    "id": "rag-exact-part-number",
+    "task": "According to my notes, on which shelf is spare part KX-6255 stored? Name the source file.",
+    "use_web": false,
+    "checks": [
+      { "type": "tool_used", "name": "knowledge_search" },
+      { "type": "contains", "text": "F4" },
+      { "type": "contains", "text": "parts-catalog.md" }
+    ]
+  },
+  {
+    "id": "research-from-pdf-and-word",
+    "mode": "research",
+    "task": "According to my notes, when does the Kestrel maintenance contract renew, who is the vendor contact for it, and what laptop model do new Osprey team members receive?",
+    "use_web": false,
+    "checks": [
+      { "type": "status", "value": "done" },
+      { "type": "contains", "text": "14 March" },
+      { "type": "contains", "text": "Ilse Brandt" },
+      { "type": "contains", "text": "TX-880" },
+      { "type": "contains", "text": "knowledge/kestrel-contract.pdf, page 2" }
+    ]
+  },
+  {
     "id": "research-python-release",
     "task": "What is the latest stable version of Python, and when was it released? Give a short answer citing the pages you read.",
     "checks": [

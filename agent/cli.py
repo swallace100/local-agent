@@ -11,6 +11,7 @@ from agent.moltbook import digest_task
 from agent.organize import DEFAULT_INSTRUCTION, MOVES_FILE, apply_moves, scan, undo_moves, why_not
 from agent.rag import Knowledge
 from agent.runner import resume_run, start_run
+from agent.tools import source_label
 
 
 def _print_result(result) -> None:
@@ -136,9 +137,13 @@ def main() -> None:
             f"Indexed {result.added} new or changed files, removed {result.removed}, "
             f"{result.unchanged} unchanged. Total chunks: {result.chunks}"
         )
+        for reason in result.skipped:
+            print(f"Skipped {reason}")
     elif args.command == "search":
         for doc, distance in Knowledge(settings).search(args.query):
-            print(f"\n[{distance:.3f}] {doc.metadata['source']}\n{doc.page_content}")
+            # A chunk with no distance was found by its words alone.
+            match = "words" if distance is None else f"{distance:.3f}"
+            print(f"\n[{match}] {source_label(doc)}\n{doc.page_content}")
     elif args.command == "eval":
         from agent.evals import run_evals
 

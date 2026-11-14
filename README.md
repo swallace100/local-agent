@@ -102,12 +102,14 @@ The report ends with an Evidence section that lists each checked quote under its
 
 A research run takes about 2 to 4 minutes for a question with four parts.
 
+Search engines block a client that asks too often, usually for under an hour. Four engines are used so that one being blocked doesn't matter. If all of them refuse, the report says how many searches failed instead of claiming there was no evidence. Many research runs in a row are the usual cause, so space out large batches.
+
 ### Tools
 
 | Tool                                                 | What it does                                          |
 | ---------------------------------------------------- | ----------------------------------------------------- |
 | `knowledge_search`                                   | Searches your files in `knowledge/`                   |
-| `web_search`, `web_read_page`                        | Searches the web, and reads pages as clean text       |
+| `web_search`, `web_read_page`                        | Searches the web, and reads pages, PDFs and Word files as clean text |
 | `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only           |
 | `finish_with_file`                                   | Hands in a workspace file as the final result         |
 | `run_command`                                        | Runs a command in the sandbox (see [Safety](#safety)) |
@@ -141,7 +143,11 @@ Sixty files take about 30 seconds to plan. Expect a few debatable choices, such 
 
 ### Your notes (RAG)
 
-Put notes and documents in `knowledge/`, then run `agent index`. Indexing only re-processes files that changed. Text formats are supported, including Markdown, code, JSON, YAML, and CSV. PDFs and Word documents aren't supported yet.
+Put notes and documents in `knowledge/`, then run `agent index`. Indexing only re-processes files that changed. It reads PDFs, Word documents (`.docx`), and text formats including Markdown, code, JSON, YAML, and CSV. Answers from a PDF name the page.
+
+`agent index` lists any file it had to skip and why. The usual reasons are a scanned PDF, which holds pictures of pages with no text in them, and a password-protected PDF. Older `.doc` files aren't read, so save them as `.docx` first.
+
+Search works two ways at once. It finds text that means the same as your question, and it finds exact words such as part numbers, names and codes, which meaning-based search tends to miss among similar entries.
 
 ### Moltbook digest
 

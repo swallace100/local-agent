@@ -11,3 +11,11 @@ search:
   formats:
     - html
     - json
+
+# Search engines block a client that asks too often, for minutes or hours at a time. By
+# default only three web engines are on (DuckDuckGo, Google and Brave), so a busy session
+# can lose all of them at once. Yahoo is added as a fourth. Bing was tried and left off
+# because its results through SearXNG were unrelated to the query.
+engines:
+  - name: yahoo
+    disabled: false

@@ -1,15 +1,20 @@
-// Fetches a web page and reduces it to readable text that fits a small context window.
+// Fetches a web page, PDF or Word document and reduces it to readable text that fits a
+// small context window.
 import { BlockList, isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns";
 import { lookup } from "node:dns/promises";
 import { Readability } from "@mozilla/readability";
 import { JSDOM, VirtualConsole } from "jsdom";
+import mammoth from "mammoth";
+import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import TurndownService from "turndown";
 // undici's own fetch, so that it and the Agent below are the same version.
 import { Agent, fetch } from "undici";
 
 export const PAGE_CHARS = 8_000;
 const MAX_BYTES = 5_000_000;
+const MAX_DOCUMENT_BYTES = 25_000_000;
+const RECENT_PAGES = 8;
 const MAX_REDIRECTS = 5;
 const TIMEOUT_MS = 20_000;
 // Measured on 13 ordinary pages, Readability kept at least 57% of the text. On python.org's
@@ -126,25 +131,76 @@ export function sliceText(text, offset) {
   return chunk + next;
 }
 
-export async function readPage(startUrl, offset = 0) {
+// Servers often send documents as a generic download, so the file name is checked too.
+export function documentKind(type, pathname) {
+  const generic = /octet-stream|binary/i.test(type) || !type;
+  if (/application\/pdf/i.test(type) || (generic && /\.pdf$/i.test(pathname))) return "pdf";
+  if (/wordprocessingml\.document/i.test(type) || (generic && /\.docx$/i.test(pathname))) return "docx";
+  return null;
+}
+
+export async function pdfToText(bytes) {
+  const pdf = await getDocumentProxy(new Uint8Array(bytes));
+  const { text: pages } = await extractText(pdf, { mergePages: false });
+  const meta = await getMeta(pdf).catch(() => null);
+  const text = pages
+    .map((page, index) => `[Page ${index + 1}]\n${page.trim()}`)
+    .filter((page) => /\n./.test(page))
+    .join("\n\n");
+  return { title: meta?.info?.Title?.trim() || "", text };
+}
+
+export async function docxToText(bytes) {
+  const { value } = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+  return { title: "", text: value.replace(/\n{3,}/g, "\n\n").trim() };
+}
+
+async function fetchText(startUrl) {
   const { response, url } = await fetchPublic(startUrl);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${url}`);
   }
   const type = response.headers.get("content-type") ?? "";
-  if (!/text\/|html|json|xml/i.test(type)) {
+  const kind = documentKind(type, url.pathname);
+  if (!kind && !/text\/|html|json|xml/i.test(type)) {
     throw new Error(`Cannot read this content type: ${type || "unknown"}`);
   }
+  const limit = kind ? MAX_DOCUMENT_BYTES : MAX_BYTES;
+  // Checked before downloading when the server says, and again after in case it didn't.
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (declared > limit) {
+    throw new Error(`Too large to read (${declared} bytes)`);
+  }
   const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > MAX_BYTES) {
-    throw new Error(`Page is too large to read (${bytes.byteLength} bytes)`);
+  if (bytes.byteLength > limit) {
+    throw new Error(`Too large to read (${bytes.byteLength} bytes)`);
   }
-  const raw = new TextDecoder().decode(bytes);
-  const { title, text } = /html/i.test(type)
-    ? htmlToText(raw, url.href)
-    : { title: "", text: raw };
-  if (!text) {
-    throw new Error("The page has no readable text. It may require JavaScript.");
+  let result;
+  if (kind === "pdf") result = await pdfToText(bytes);
+  else if (kind === "docx") result = await docxToText(bytes);
+  else {
+    const raw = new TextDecoder().decode(bytes);
+    result = /html/i.test(type) ? htmlToText(raw, url.href) : { title: "", text: raw };
   }
-  return `Title: ${title}\nURL: ${url.href}\n\n${sliceText(text, offset)}`;
+  if (!result.text) {
+    throw new Error(
+      kind === "pdf"
+        ? "This PDF has no text in it. It is probably a scan."
+        : "The page has no readable text. It may require JavaScript.",
+    );
+  }
+  return { ...result, url: url.href };
+}
+
+// Reading the next section of a page shouldn't download and convert it again.
+const recent = new Map();
+
+export async function readPage(startUrl, offset = 0) {
+  let page = recent.get(startUrl);
+  if (!page) {
+    page = await fetchText(startUrl);
+    recent.set(startUrl, page);
+    if (recent.size > RECENT_PAGES) recent.delete(recent.keys().next().value);
+  }
+  return `Title: ${page.title}\nURL: ${page.url}\n\n${sliceText(page.text, offset)}`;
 }
