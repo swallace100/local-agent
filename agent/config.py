@@ -49,6 +49,11 @@ class Settings:
     # The shortest gap between web searches. Search engines block a client that asks too often.
     search_pause_seconds: float = field(default_factory=lambda: float(_env("SEARCH_PAUSE_SECONDS", "2")))
 
+    # Whether web research saves its notes for later runs, and starts from earlier ones.
+    remember: bool = True
+    # The gap between queued tasks, which gives search engines a rest.
+    queue_pause_seconds: int = 60
+
     # Organize runs (agent organize).
     organize_max_files: int = 2_000
     organize_batch: int = 25
@@ -57,6 +62,10 @@ class Settings:
     @property
     def checkpoint_db(self) -> Path:
         return self.data_dir / "checkpoints.sqlite"
+
+    @property
+    def queue_file(self) -> Path:
+        return self.data_dir / "queue.json"
 
     @property
     def vector_dir(self) -> Path:

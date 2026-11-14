@@ -1,12 +1,17 @@
-"""Command line: agent run | research | team | organize | apply | undo | resume | runs | index | search | eval | moltbook"""
+"""Command line: agent run | research | team | organize | apply | undo | queue | recall | resume | runs | index | search
+| eval | moltbook"""
 
 import argparse
 import asyncio
 import json
+import sys
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from agent.config import Settings
+from agent.jobs import MODES, Queue, run_queue, schedule, scheduled_time, unschedule
+from agent.memory import Memory
 from agent.moltbook import digest_task
 from agent.organize import DEFAULT_INSTRUCTION, MOVES_FILE, apply_moves, scan, undo_moves, why_not
 from agent.rag import Knowledge
@@ -52,6 +57,69 @@ def _print_moves(settings: Settings, run_id: str, action, done: str) -> None:
             print(f"  {reason}")
 
 
+class _Tee:
+    """Copies everything printed into a log file, for runs nobody is watching."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self.streams:
+            stream.write(text)
+            stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def fileno(self) -> int:
+        # Programs the agent starts, such as the web tools, write their errors straight to a
+        # file handle. They get the log, which is the last stream.
+        return self.streams[-1].fileno()
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _queue_command(settings: Settings, args) -> None:
+    queue = Queue(settings.queue_file)
+    if args.action == "add":
+        if args.mode != "moltbook" and not args.task:
+            raise SystemExit("Give the task to queue, in quotes.")
+        if args.project and not args.project.is_dir():
+            raise SystemExit(f"No such folder: {args.project}")
+        project = str(args.project.resolve()) if args.project else None
+        job = queue.add(args.mode, args.task or "", not args.no_web, project, args.repeat)
+        print(f"Queued as task {job.id}. Start the queue with: agent queue run")
+    elif args.action == "list":
+        when = scheduled_time()
+        print(f"The queue runs every day at {when}." if when else "The queue isn't scheduled. Run it with: agent queue run")
+        for job in queue.jobs:
+            repeat = " (repeats)" if job.repeat else ""
+            outcome = f"  last: {job.outcome.splitlines()[0][:60]}" if job.outcome else ""
+            print(f"{job.id:>3}  {job.status:<8} {job.mode:<9} {job.task[:60] or 'Moltbook digest'}{repeat}{outcome}")
+        if not queue.jobs:
+            print("The queue is empty.")
+    elif args.action == "remove":
+        print("Removed." if queue.remove(args.id) else f"There is no task {args.id}.")
+    elif args.action == "clear":
+        print(f"Cleared {queue.clear_finished()} finished tasks.")
+    elif args.action == "run":
+        if args.log:
+            args.log.parent.mkdir(parents=True, exist_ok=True)
+            log = args.log.open("a", encoding="utf-8")
+            log.write(f"\n===== Queue started {datetime.now():%Y-%m-%d %H:%M} =====\n")
+            sys.stdout = sys.stderr = _Tee(sys.__stdout__, log) if sys.__stdout__ else log
+        asyncio.run(run_queue(settings))
+    elif args.action == "schedule":
+        schedule(settings, args.time)
+        print(f"Windows will run the queue every day at {args.time}, waking this PC if it's asleep.")
+        print("Ollama must be running then, and Docker Desktop too for tasks that search the web or run commands.")
+    elif args.action == "unschedule":
+        print("The nightly run is off." if unschedule() else "The queue wasn't scheduled.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent", description="Unattended local agent")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -68,6 +136,7 @@ def main() -> None:
     research.add_argument("task")
     research.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     research.add_argument("--max-minutes", type=int, help="Time limit for this run")
+    research.add_argument("--no-memory", action="store_true", help="Don't use or add to what earlier runs found")
 
     team = commands.add_parser(
         "team", help="Research a question with several agents that share notes and cross-check each other"
@@ -76,6 +145,7 @@ def main() -> None:
     team.add_argument("--agents", type=int, help="How many agents work on it (default 2)")
     team.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     team.add_argument("--max-minutes", type=int, help="Time limit for this run")
+    team.add_argument("--no-memory", action="store_true", help="Don't use or add to what earlier runs found")
 
     organize = commands.add_parser(
         "organize", help="Plan how to tidy a folder into subfolders, without moving anything"
@@ -89,6 +159,27 @@ def main() -> None:
 
     undo = commands.add_parser("undo", help="Put back the files that apply moved")
     undo.add_argument("run_id")
+
+    queue = commands.add_parser("queue", help="Line up tasks and work through them unattended")
+    actions = queue.add_subparsers(dest="action", required=True)
+    add = actions.add_parser("add", help="Add a task to the queue")
+    add.add_argument("task", nargs="?", help="The task, or the topic for a Moltbook digest")
+    add.add_argument("--mode", choices=MODES, default="research", help="How to run it (default: research)")
+    add.add_argument("--no-web", action="store_true", help="Turn off web search and page reading")
+    add.add_argument("--project", type=Path, help="With --mode run: work on a copy of this folder")
+    add.add_argument("--repeat", action="store_true", help="Run it again every time the queue runs")
+    actions.add_parser("list", help="Show the queue")
+    remove = actions.add_parser("remove", help="Take a task out of the queue")
+    remove.add_argument("id", type=int)
+    actions.add_parser("clear", help="Take finished tasks out of the queue")
+    run_queued = actions.add_parser("run", help="Work through everything waiting")
+    run_queued.add_argument("--log", type=Path, help="Also write the output to this file")
+    at = actions.add_parser("schedule", help="Run the queue every day at a set time")
+    at.add_argument("time", help="24-hour time, such as 02:00")
+    actions.add_parser("unschedule", help="Stop running the queue every day")
+
+    recall = commands.add_parser("recall", help="Search what earlier research runs found")
+    recall.add_argument("query")
 
     resume = commands.add_parser("resume", help="Continue an interrupted run")
     resume.add_argument("run_id")
@@ -111,6 +202,9 @@ def main() -> None:
 
     if args.command in ("run", "research", "team", "organize") and args.max_minutes:
         settings = replace(settings, max_minutes=args.max_minutes)
+
+    if getattr(args, "no_memory", False):
+        settings = replace(settings, remember=False)
 
     if args.command == "run":
         if args.project and not args.project.is_dir():
@@ -140,6 +234,16 @@ def main() -> None:
         print(f"To reverse this, run: agent undo {args.run_id}")
     elif args.command == "undo":
         _print_moves(settings, args.run_id, undo_moves, "Put back")
+    elif args.command == "queue":
+        _queue_command(settings, args)
+    elif args.command == "recall":
+        found = Memory(settings).recall(args.query)
+        for doc, _ in found:
+            question, fact, quote = doc.page_content.split("\n", 2)
+            print(f"\n{fact}\n  {quote}\n  {doc.metadata['source']}")
+            print(f"  Found {doc.metadata['date']} while researching: {question}")
+        if not found:
+            print("Nothing from earlier research matches that.")
     elif args.command == "moltbook":
         _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, mode="moltbook")))
     elif args.command == "resume":

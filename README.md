@@ -60,6 +60,8 @@ With `--project`, the agent works on a copy of your folder and never changes the
 | `agent team "question"` | Research with several agents that share notes and cross-check each other (see [Research as a team](#research-as-a-team)) |
 | `agent organize <folder> "instruction"` | Plan how to tidy a folder, without moving anything (see [Organizing a folder](#organizing-a-folder)) |
 | `agent apply <id>`, `agent undo <id>` | Carry out an organize plan, or reverse it |
+| `agent queue add`, `agent queue run` | Line up tasks and work through them unattended (see [Running tasks overnight](#running-tasks-overnight)) |
+| `agent recall "query"` | Search what earlier research runs found (see [What earlier research found](#what-earlier-research-found)) |
 | `agent runs`           | List runs and their status                                         |
 | `agent resume <id>`    | Continue a run that was interrupted, from its last completed step  |
 | `agent index`          | Update the search index after changing `knowledge/`                |
@@ -172,6 +174,56 @@ Put notes and documents in `knowledge/`, then run `agent index`. Indexing only r
 
 Search works two ways at once. It finds text that means the same as your question, and it finds exact words such as part numbers, names and codes, which meaning-based search tends to miss among similar entries.
 
+### What earlier research found
+
+Every `agent research` and `agent team` run that uses the web saves its checked notes, each with the page it came from. Later runs start from them:
+
+- When a new question is close to one answered before, the agent reads those same pages again first. If they answer it, no web search is made.
+- A remembered note is never used as evidence. It only says where to look, and the page is read and its quotes checked afresh, so an out-of-date note can't end up in a report.
+- These notes are kept apart from your own files in `knowledge/`. They began as text on web pages, so they are trusted less.
+
+```powershell
+.venv\Scripts\agent recall "who created Rust"
+.venv\Scripts\agent research "..." --no-memory
+```
+
+`agent recall` shows what has been remembered: the fact, its quote, the page, and when it was found. `--no-memory` runs without using or adding to it.
+
+In one test, a second question about a topic researched earlier made no searches at all. That also keeps you under the search engines' limits.
+
+### Running tasks overnight
+
+Line up tasks in a queue, then work through them in one go:
+
+```powershell
+.venv\Scripts\agent queue add "Compare SQLite and DuckDB for local analytics"
+.venv\Scripts\agent queue add "How do heat pumps work in cold climates?" --mode team
+.venv\Scripts\agent queue add "Fix the failing tests" --mode run --project C:\code\my-app
+.venv\Scripts\agent queue add "agent memory" --mode moltbook --repeat
+.venv\Scripts\agent queue list
+.venv\Scripts\agent queue run
+```
+
+`--mode` is `research` (the default), `team`, `run`, or `moltbook` for a digest. `--repeat` keeps a task in the queue so it runs every time, which suits a nightly digest.
+
+Each task is an ordinary run with its report in `runs/`. When the queue finishes, a summary file `runs/queue-<date>.md` lists every task, how it ended, and where its report is.
+
+- One task failing doesn't stop the rest.
+- Tasks run one at a time, with a minute between them so search engines get a rest.
+- A task cut off by a crash or a restart carries on from its last completed step the next time the queue runs.
+- `agent queue remove <number>` takes a task out, and `agent queue clear` removes the finished ones.
+
+To run the queue every night:
+
+```powershell
+.venv\Scripts\agent queue schedule 02:00
+.venv\Scripts\agent queue unschedule
+```
+
+This adds a task to Windows Task Scheduler that wakes the PC if it's asleep, and runs later if the PC was off at that time. Output goes to `.data\queue.log`. You must be signed in to Windows, Ollama must be running, and Docker Desktop too for tasks that search the web or run commands. A console window opens while it works.
+
+Folder tidy-ups can't be queued, because their plan needs reading before anything is moved.
+
 ### Moltbook digest
 
 [Moltbook](https://www.moltbook.com) is a social network for AI agents. This command reads it and reports what the bots are talking about:
@@ -276,6 +328,7 @@ Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted mod
 | Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py)                                                                                         |
 | Research runs: prompts and workflow    | [agent/research.py](agent/research.py)                                                                                   |
 | Team runs: the board and the agents    | [agent/team.py](agent/team.py)                                                                                           |
+| The queue, and what research remembers | [agent/jobs.py](agent/jobs.py), [agent/memory.py](agent/memory.py)                                                       |
 | Organize runs: prompts and rules       | [agent/organize.py](agent/organize.py)                                                                                   |
 | Unattended agent: limits and models    | [agent/config.py](agent/config.py), or `AGENT_*` environment variables                                                   |
 | Interactive agent: permissions         | [opencode.jsonc](opencode.jsonc)                                                                                         |

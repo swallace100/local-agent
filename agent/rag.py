@@ -171,6 +171,7 @@ class Knowledge:
         folder: Path | None = None,
         store_dir: Path | None = None,
         embeddings: Embeddings | None = None,
+        collection: str = "knowledge",
     ):
         self.folder = folder or settings.knowledge_dir
         store_dir = store_dir or settings.vector_dir
@@ -180,7 +181,7 @@ class Knowledge:
             model=settings.embedding_model, base_url=settings.ollama_url, num_gpu=0
         )
         self.store = Chroma(
-            collection_name="knowledge",
+            collection_name=collection,
             embedding_function=embeddings,
             persist_directory=str(store_dir),
             collection_metadata={"hnsw:space": "cosine"},
@@ -234,6 +235,12 @@ class Knowledge:
             chunks=total,
             skipped=skipped,
         )
+
+    def add(self, documents: list[Document], ids: list[str]) -> None:
+        """Store documents directly, replacing any that have the same ID."""
+        if documents:
+            self.store.add_documents(documents, ids=ids)
+            self._chunks = None
 
     def _all_chunks(self) -> list[Document]:
         """Every chunk, loaded once for keyword search. A personal notes folder is small enough."""

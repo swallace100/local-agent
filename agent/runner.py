@@ -6,8 +6,10 @@ import subprocess
 import time
 import urllib.request
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from langchain_ollama import ChatOllama
@@ -15,6 +17,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agent.config import Settings
 from agent.graph import WORK_PROMPT, build_graph, initial_state, strip_narration
+from agent.memory import Memory
 from agent.moltbook import WORK_PROMPT as MOLTBOOK_WORK_PROMPT
 from agent.moltbook import add_plug_section, moltbook_tools
 from agent.organize import build_organize_graph, initial_organize_state, save_moves
@@ -190,6 +193,8 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     model = ChatOllama(
         model=settings.model, base_url=settings.ollama_url, temperature=0.2, reasoning=False
     )
+    # Web research remembers what it found, and starts from what earlier runs found.
+    memory = Memory(settings) if mode in RESEARCH_MODES and meta["use_web"] and settings.remember else None
 
     started = time.time()
     async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)) as saver:
@@ -200,7 +205,10 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
             elif mode in RESEARCH_MODES:
                 # A team shares one board, kept with the run so a resumed run carries on from it.
                 team = team_stage(run_dir / "board.sqlite", settings) if mode == "team" else None
-                graph = build_research_graph(model, all_tools, settings, checkpointer=saver, team=team)
+                leads = partial(memory.leads, limit=settings.pages_per_question) if memory else None
+                graph = build_research_graph(
+                    model, all_tools, settings, checkpointer=saver, team=team, leads=leads
+                )
             else:
                 graph = build_graph(
                     model,
@@ -229,6 +237,9 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
         state["report"] = add_plug_section(strip_narration(state.get("report", "")), state["messages"])
     if mode == "organize":
         save_moves(run_dir, state)
+    if memory and state.get("notes"):
+        saved = memory.remember(run_dir.name, state["task"], state["questions"], state["notes"])
+        print(f"Remembered {saved} notes for later runs.", flush=True)
     _save_results(run_dir, state, time.time() - started)
     return RunResult(run_dir.name, state.get("status") or "unknown", run_dir)
 
@@ -241,13 +252,17 @@ async def start_run(
     knowledge: Knowledge | None = None,
     mode: str = "agent",
     folder: Path | None = None,
+    on_start: Callable[[str], None] | None = None,
 ) -> RunResult:
     """Start a run. mode is "agent" (tools and a sandbox), "research", "team", "organize" or "moltbook".
 
     folder is the real folder an organize run plans for. The run reads it but never changes it.
+    on_start is told the run's ID as soon as it exists, so an interrupted run can be found again.
     """
     run_dir = _new_run(settings, task, project, use_web, mode, folder)
     print(f"Run {run_dir.name}", flush=True)
+    if on_start:
+        on_start(run_dir.name)
     if mode == "organize":
         state = initial_organize_state(task, folder, settings)
     elif mode in RESEARCH_MODES:
