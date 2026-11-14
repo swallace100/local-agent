@@ -239,7 +239,7 @@ The digest can only read. It doesn't use the agent's account or key, and it has 
 
 ### Posting on Moltbook
 
-The agent can have its own Moltbook account. It never posts by itself: it drafts, and you approve each draft.
+The agent can have its own Moltbook account. By default it never posts by itself: it drafts, and you approve each draft. You can also let it comment unprompted (see [Commenting without approval](#commenting-without-approval)).
 
 ```powershell
 .venv\Scripts\agent moltbook join "AgentName" "A one-line description"
@@ -257,7 +257,9 @@ The agent can have its own Moltbook account. It never posts by itself: it drafts
 3. **Check:** code refuses a draft that contains a link, a web or email address, a file path, a command, or anything that looks like a key.
 4. **Approve:** you read the draft in the outbox. `approve` posts it, and `--edit "text"` posts your wording instead.
 
-Moltbook sets a small maths puzzle before it shows what an agent wrote. The agent works it out and shows you its answer before sending, because ten wrong answers in a row suspend the account. Press Enter to accept, or type the right number.
+Moltbook sets a small maths puzzle before it shows what an agent wrote. The agent works it out and shows you its answer before sending, because ten wrong answers in a row suspend the account. Press Enter to accept, or type the right number. With `approve 1 --answer-later` the puzzle is shown and saved, and you have five minutes to send `agent moltbook answer <number>`.
+
+Code unscrambles the puzzle and finds its two numbers, and the model is only asked which sum the sentence describes. A 9B model reading the scrambled text itself got three real puzzles wrong in a row.
 
 Safeguards:
 
@@ -265,9 +267,46 @@ Safeguards:
 - The agent sends at most one thing a minute and ten a day, well under Moltbook's limits.
 - `inbox` shows who replied to the agent's posts. It leaves out the parts of Moltbook's reply that tell an agent what to do next.
 
-Moltbook's own instructions ask agents to fetch a file from its website every 30 minutes and follow it, and to upvote and follow on their own. This agent does none of that. Following instructions fetched from a website would let that website steer the agent.
+Moltbook's own instructions ask agents to fetch a file from its website every 30 minutes and follow it. This agent doesn't. Following instructions fetched from a website would let that website steer the agent. It also doesn't upvote or follow anyone.
 
 What the agent may say about itself is the `ABOUT` text in [agent/outbox.py](agent/outbox.py). Edit it to change that.
+
+### Commenting without approval
+
+This is off unless you turn it on, and one command turns it off again:
+
+```powershell
+.venv\Scripts\agent moltbook auto on
+.venv\Scripts\agent moltbook auto on --every 6
+.venv\Scripts\agent moltbook auto off
+.venv\Scripts\agent moltbook auto status
+.venv\Scripts\agent moltbook checkin
+.venv\Scripts\agent moltbook checkin --dry-run
+```
+
+`auto on` allows check-ins. `--every 6` also has Windows run one every six hours. `auto off` stops both. `checkin --dry-run` shows what the agent would post without posting, whether auto is on or not.
+
+A check-in is one pass:
+
+1. It answers replies to the agent's own posts.
+2. It searches Moltbook for two of the agent's subjects and reads up to six posts it hasn't seen.
+3. For each post, the model writes a comment or says it has nothing to add.
+4. It posts at most two comments, then stops.
+
+The subjects are the `INTERESTS` list in [agent/moltbook_auto.py](agent/moltbook_auto.py). Edit it to change what the agent joins in on.
+
+Every check-in writes `runs/moltbook-checkin-<date>.md`, listing what it read, what it posted, what it decided against, and any comment code blocked. That file is how you see what the agent is doing.
+
+What still holds with nobody approving:
+
+- The model has no tools, notes, files or key. It only writes text.
+- Code refuses any comment with a link, an address, a path, a command or a key.
+- The pace is the same: one comment a minute and ten a day.
+- Code decides which posts are read and how many. Nothing on Moltbook can give the agent a task.
+- A puzzle answer is only sent when the model's sum uses exactly the numbers code found. Otherwise the comment stays hidden.
+- One failed puzzle ends the check-in, and three in a row turn auto off.
+
+What to expect: the comments are on topic and polite, and they tend to ask a question about the post. A 9B model sometimes implies experience it doesn't have, such as "on limited hardware latency matters more". The prompt forbids that, and it still slips through now and then.
 
 ## Interactive agent
 
