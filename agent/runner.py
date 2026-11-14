@@ -54,6 +54,10 @@ def preflight(settings: Settings, need_web: bool, need_docker: bool = True) -> N
         raise SystemExit("Docker isn't running, and commands need it. Start Docker Desktop.")
 
 
+def make_model(settings: Settings) -> ChatOllama:
+    return ChatOllama(model=settings.model, base_url=settings.ollama_url, temperature=0.2, reasoning=False)
+
+
 def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
     ignored = set()
     for name in names:
@@ -190,9 +194,7 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
         knowledge = knowledge or Knowledge(settings)
         tools = [*file_tools(workspace), command_tool(settings, workspace), knowledge_tool(knowledge)]
         work_prompt = WORK_PROMPT
-    model = ChatOllama(
-        model=settings.model, base_url=settings.ollama_url, temperature=0.2, reasoning=False
-    )
+    model = make_model(settings)
     # Web research remembers what it found, and starts from what earlier runs found.
     memory = Memory(settings) if mode in RESEARCH_MODES and meta["use_web"] and settings.remember else None
 
