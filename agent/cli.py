@@ -1,9 +1,10 @@
-"""Command line: agent run | research | team | organize | apply | undo | queue | recall | resume | runs | index | search
+"""Command line: agent run | research | team | join | organize | apply | undo | queue | recall | resume | runs | index | search
 | eval | moltbook"""
 
 import argparse
 import asyncio
 import json
+import socket
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -16,8 +17,17 @@ from agent.moltbook import digest_task
 from agent.organize import DEFAULT_INSTRUCTION, MOVES_FILE, apply_moves, scan, undo_moves, why_not
 from agent.rag import Knowledge
 from agent import moltbook_commands
-from agent.moltbook_account import load_key
-from agent.runner import make_model, preflight, resume_run, start_run
+from agent.moltbook_account import Account, load_key
+from agent.moltbook_auto import (
+    MAX_COMMENTS,
+    auto_state,
+    check_in,
+    checkins_scheduled,
+    schedule_checkins,
+    unschedule_checkins,
+)
+from agent.remote import DEFAULT_PORT
+from agent.runner import join_team, make_model, preflight, resume_run, start_run
 from agent.tools import source_label
 
 
@@ -84,7 +94,52 @@ class _Tee:
         return False
 
 
+def _also_log_to(path: Path | None, what: str) -> None:
+    """Copy everything printed from here on into a file, for runs started by a schedule."""
+    if not path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    log = path.open("a", encoding="utf-8")
+    log.write(f"\n===== {what} started {datetime.now():%Y-%m-%d %H:%M} =====\n")
+    sys.stdout = sys.stderr = _Tee(sys.__stdout__, log) if sys.__stdout__ else log
+
+
+def _moltbook_auto(settings: Settings, args) -> None:
+    state = auto_state(settings)
+    if args.action == "auto" and args.switch == "on":
+        if not load_key():
+            raise SystemExit('The agent hasn\'t joined Moltbook yet. Run: agent moltbook join "Name" "Description"')
+        state.on, state.failed_puzzles, state.stopped_because = True, 0, ""
+        state.save()
+        print("On. The agent may now comment on Moltbook without asking you first.")
+        if args.every:
+            schedule_checkins(settings, args.every)
+            print(f"Windows will run a check-in every {args.every} hours. Each one is written up in runs/.")
+        else:
+            print("Run a check-in with: agent moltbook checkin    (or add --every 6 to have Windows do it)")
+    elif args.action == "auto" and args.switch == "off":
+        state.on = False
+        state.save()
+        unschedule_checkins()
+        print("Off. The agent will not post anything unless you approve it, and no check-ins are scheduled.")
+    elif args.action == "auto":
+        print("On." if state.on else "Off." + (f" It was turned off because {state.stopped_because}" if state.stopped_because else ""))
+        print(f"Scheduled check-ins: {'yes' if checkins_scheduled() else 'no'}")
+    else:
+        saved = load_key()
+        if not saved:
+            raise SystemExit('The agent hasn\'t joined Moltbook yet. Run: agent moltbook join "Name" "Description"')
+        _also_log_to(args.log, "Check-in")
+        preflight(settings, need_web=False, need_docker=False)
+        report = asyncio.run(
+            check_in(settings, make_model(settings), Account(saved[0]), saved[1], args.dry_run, args.max)
+        )
+        print(f"\nWritten up in {report}")
+
+
 def _moltbook_command(settings: Settings, args) -> None:
+    if args.action in ("auto", "checkin"):
+        return _moltbook_auto(settings, args)
     if args.action == "join":
         moltbook_commands.join(args.name, args.description)
     elif args.action == "status":
@@ -107,7 +162,13 @@ def _moltbook_command(settings: Settings, args) -> None:
         )
     elif args.action == "approve":
         preflight(settings, need_web=False, need_docker=False)
-        asyncio.run(moltbook_commands.approve(settings, make_model(settings), args.id, args.edit))
+        asyncio.run(
+            moltbook_commands.approve(
+                settings, make_model(settings), args.id, args.edit, answer_later=args.answer_later
+            )
+        )
+    elif args.action == "answer":
+        moltbook_commands.answer(settings, args.number)
 
 
 def _queue_command(settings: Settings, args) -> None:
@@ -134,11 +195,7 @@ def _queue_command(settings: Settings, args) -> None:
     elif args.action == "clear":
         print(f"Cleared {queue.clear_finished()} finished tasks.")
     elif args.action == "run":
-        if args.log:
-            args.log.parent.mkdir(parents=True, exist_ok=True)
-            log = args.log.open("a", encoding="utf-8")
-            log.write(f"\n===== Queue started {datetime.now():%Y-%m-%d %H:%M} =====\n")
-            sys.stdout = sys.stderr = _Tee(sys.__stdout__, log) if sys.__stdout__ else log
+        _also_log_to(args.log, "Queue")
         asyncio.run(run_queue(settings))
     elif args.action == "schedule":
         schedule(settings, args.time)
@@ -174,6 +231,15 @@ def main() -> None:
     team.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     team.add_argument("--max-minutes", type=int, help="Time limit for this run")
     team.add_argument("--no-memory", action="store_true", help="Don't use or add to what earlier runs found")
+    team.add_argument("--host", action="store_true", help="Let agents on other machines join this run")
+    team.add_argument("--port", type=int, default=DEFAULT_PORT, help="With --host: the port to listen on")
+    team.add_argument("--wait-for", type=int, default=0, metavar="N", help="With --host: wait for N machines to join")
+
+    join = commands.add_parser("join", help="Join a team run hosted on another machine")
+    join.add_argument("url", help="The address the host printed, such as http://192.168.1.20:8765")
+    join.add_argument("--key", required=True, help="The key the host printed")
+    join.add_argument("--name", default=socket.gethostname(), help="What to call this machine's agent")
+    join.add_argument("--max-minutes", type=int, help="How long to keep working")
 
     organize = commands.add_parser(
         "organize", help="Plan how to tidy a folder into subfolders, without moving anything"
@@ -240,14 +306,28 @@ def main() -> None:
     approve = social.add_parser("approve", help="Post a draft")
     approve.add_argument("id", type=int)
     approve.add_argument("--edit", help="Post this text instead of the draft's")
+    approve.add_argument(
+        "--answer-later",
+        action="store_true",
+        help="Show Moltbook's puzzle and stop, to answer with: agent moltbook answer",
+    )
+    answer = social.add_parser("answer", help="Answer the puzzle left by approve --answer-later")
+    answer.add_argument("number", type=float)
     reject = social.add_parser("reject", help="Drop a draft")
     reject.add_argument("id", type=int)
     social.add_parser("inbox", help="Show replies to what the agent has posted")
+    auto = social.add_parser("auto", help="Turn commenting without your approval on or off")
+    auto.add_argument("switch", choices=["on", "off", "status"])
+    auto.add_argument("--every", type=int, metavar="HOURS", help="With on: have Windows run a check-in this often")
+    checkin = social.add_parser("checkin", help="Let the agent read Moltbook and comment where it has something to say")
+    checkin.add_argument("--dry-run", action="store_true", help="Show what it would post, without posting")
+    checkin.add_argument("--max", type=int, default=MAX_COMMENTS, help="The most comments to post this time")
+    checkin.add_argument("--log", type=Path, help="Also write the output to this file")
 
     args = parser.parse_args()
     settings = Settings()
 
-    if args.command in ("run", "research", "team", "organize") and args.max_minutes:
+    if args.command in ("run", "research", "team", "organize", "join") and args.max_minutes:
         settings = replace(settings, max_minutes=args.max_minutes)
 
     if getattr(args, "no_memory", False):
@@ -261,10 +341,18 @@ def main() -> None:
         _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="research")))
     elif args.command == "team":
         if args.agents is not None:
-            if args.agents < 2:
+            if args.agents < (1 if args.host else 2):
                 raise SystemExit("A team needs at least 2 agents. For one agent, use: agent research")
             settings = replace(settings, team_agents=args.agents)
-        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="team")))
+        host = None
+        if args.host:
+            if args.no_web:
+                raise SystemExit("Hosting needs the web, because the host checks joiners' notes against the pages.")
+            # Up to five minutes for the others to join, when asked to wait for them.
+            host = {"listen": "0.0.0.0", "port": args.port, "wait_for": args.wait_for, "wait_seconds": 300}
+        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="team", host=host)))
+    elif args.command == "join":
+        asyncio.run(join_team(settings, args.url, args.key, args.name))
     elif args.command == "organize":
         folder = args.folder.resolve()
         if not folder.is_dir():

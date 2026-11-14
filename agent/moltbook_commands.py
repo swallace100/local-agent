@@ -4,6 +4,7 @@ Each one is started by you at the command line. Nothing here runs on a schedule,
 model output can start any of it.
 """
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,7 +12,15 @@ from langchain_core.language_models import BaseChatModel
 
 from agent.config import Settings
 from agent.moltbook import POST_URL, _clean, moltbook_tools
-from agent.moltbook_account import CREDENTIALS_FILE, Account, MoltbookError, Pace, claim_details, load_key
+from agent.moltbook_account import (
+    CREDENTIALS_FILE,
+    Account,
+    Challenge,
+    MoltbookError,
+    Pace,
+    claim_details,
+    load_key,
+)
 from agent.outbox import (
     MAX_COMMENT_CHARS,
     MAX_POST_CHARS,
@@ -20,6 +29,7 @@ from agent.outbox import (
     draft_post,
     post_id_from,
     problems,
+    reading_checks_out,
     solve_challenge,
     tidy_challenge,
     title_problems,
@@ -144,8 +154,9 @@ async def approve(
     account: Account | None = None,
     confirm: Callable[[str], str] = _confirm_answer,
     credentials: Path = CREDENTIALS_FILE,
+    answer_later: bool = False,
 ) -> None:
-    """Send one draft. This is the only place anything is posted."""
+    """Send one draft. With answer_later, the puzzle is saved for `agent moltbook answer`."""
     outbox = _outbox(settings)
     item = outbox.get(draft_id)
     if not item or item.status != "draft":
@@ -173,9 +184,21 @@ async def approve(
             # Moltbook hides the text until a puzzle is solved. Ten wrong answers in a row
             # suspend the account, so you see the answer before it is sent.
             solved = await solve_challenge(model, challenge.text)
-            print(f"\nMoltbook set a puzzle before it will show this:\n  {tidy_challenge(challenge.text)}")
+            print(f"\nMoltbook set a puzzle before it will show this:\n  {challenge.text}")
+            print(f"With the symbols taken out:\n  {tidy_challenge(challenge.text)}")
+            if answer_later:
+                # For when nobody is at the keyboard to answer straight away.
+                if solved:
+                    print(f"The agent reads that as: {solved[0]} = {solved[1]:.2f}")
+                pending = {"draft": item.id, "code": challenge.code, "text": challenge.text}
+                _pending_file(settings).write_text(json.dumps(pending), encoding="utf-8")
+                outbox.update(item, text=text, status="pending", note="Waiting for the puzzle's answer.")
+                print("It stays hidden until answered, within 5 minutes: agent moltbook answer <number>")
+                return
             if solved:
                 print(f"The agent reads that as: {solved[0]} = {solved[1]:.2f}")
+                if not reading_checks_out(challenge.text, solved[0]):
+                    print("Check it carefully: those aren't the numbers code found in the puzzle.")
                 reply = confirm("Press Enter to send that answer, type a different number, or type n to give up: ")
             else:
                 print("The agent couldn't work it out.")
@@ -194,6 +217,32 @@ async def approve(
         raise SystemExit("That wasn't a number, so no answer was sent. Moltbook will keep the text hidden.") from None
     outbox.update(item, text=text, status="sent")
     print(f"Draft {draft_id} is posted.")
+
+
+def _pending_file(settings: Settings) -> Path:
+    return settings.data_dir / "moltbook" / "pending-puzzle.json"
+
+
+def answer(
+    settings: Settings, number: float, account: Account | None = None, credentials: Path = CREDENTIALS_FILE
+) -> None:
+    """Send your answer to the puzzle that `approve --answer-later` left waiting."""
+    pending_file = _pending_file(settings)
+    if not pending_file.is_file():
+        raise SystemExit("There is no puzzle waiting for an answer.")
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    outbox = _outbox(settings)
+    item = outbox.get(pending["draft"])
+    pending_file.unlink()
+    try:
+        (account or _account(credentials)[0]).verify(Challenge(pending["code"], pending["text"]), number)
+    except MoltbookError as error:
+        if item:
+            outbox.update(item, status="failed", note=str(error))
+        raise SystemExit(f"Moltbook didn't accept the answer: {error}") from error
+    if item:
+        outbox.update(item, status="sent", note="")
+    print(f"Accepted. Draft {pending['draft']} is posted.")
 
 
 def inbox(account: Account | None = None, credentials: Path = CREDENTIALS_FILE) -> None:

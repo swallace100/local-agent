@@ -20,7 +20,7 @@ agents could later run in other processes or on other machines without changing 
 import asyncio
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL,         -- open, claimed or done
     agent TEXT,                   -- who claimed it
     not_for TEXT,                 -- who must not take it, so the work stays independent
-    attempt INTEGER NOT NULL DEFAULT 1
+    attempt INTEGER NOT NULL DEFAULT 1,
+    claimed_at REAL               -- when, so a task whose agent vanished can be reopened
 );
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY, question INTEGER NOT NULL, agent TEXT NOT NULL,
@@ -81,9 +82,13 @@ class Task:
 class Board:
     """What the agents share. Every method is one short transaction, so claims can't collide."""
 
-    def __init__(self, path: Path):
-        self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
+    def __init__(self, path: Path, lease_seconds: float | None = None, any_thread: bool = False):
+        """lease_seconds reopens a task whose agent hasn't finished it in that time, which
+        matters when agents on other machines can drop out. any_thread lets the board be
+        used from a server's threads, which must then take turns."""
+        self.db = sqlite3.connect(path, isolation_level=None, timeout=30, check_same_thread=not any_thread)
         self.db.executescript(SCHEMA)
+        self.lease_seconds = lease_seconds
 
     def close(self) -> None:
         self.db.close()
@@ -108,6 +113,11 @@ class Board:
         """Take the next task this agent is allowed to do. Research comes before checking."""
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            if self.lease_seconds:
+                self.db.execute(
+                    "UPDATE tasks SET status = 'open', agent = NULL WHERE status = 'claimed' AND claimed_at < ?",
+                    (time.time() - self.lease_seconds,),
+                )
             row = self.db.execute(
                 "SELECT id, kind, question, query, attempt FROM tasks "
                 "WHERE status = 'open' AND (not_for IS NULL OR not_for != ?) "
@@ -115,7 +125,10 @@ class Board:
                 (agent,),
             ).fetchone()
             if row:
-                self.db.execute("UPDATE tasks SET status = 'claimed', agent = ? WHERE id = ?", (agent, row[0]))
+                self.db.execute(
+                    "UPDATE tasks SET status = 'claimed', agent = ?, claimed_at = ? WHERE id = ?",
+                    (agent, time.time(), row[0]),
+                )
         finally:
             self.db.execute("COMMIT")
         return Task(*row) if row else None
@@ -125,6 +138,11 @@ class Board:
 
     def release(self, task: Task) -> None:
         self.db.execute("UPDATE tasks SET status = 'open', agent = NULL WHERE id = ?", (task.id,))
+
+    def held_by(self, task_id: int) -> str | None:
+        """Return the agent that has claimed a task, or None if nobody has."""
+        row = self.db.execute("SELECT agent FROM tasks WHERE id = ? AND status = 'claimed'", (task_id,)).fetchone()
+        return row[0] if row else None
 
     def in_progress(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM tasks WHERE status = 'claimed'").fetchone()[0]
@@ -282,13 +300,21 @@ async def _work(agent: str, board: Board, researcher: Researcher, questions: lis
         board.finish(task)
 
 
-def team_stage(board_path: Path, settings: Settings) -> Callable:
-    """Return the gathering stage for a research graph: a team working through a board."""
+def team_stage(
+    board_path: Path, settings: Settings, before_work: Callable[[list[str]], Awaitable[None]] | None = None
+) -> Callable:
+    """Return the gathering stage for a research graph: a team working through a board.
+
+    before_work is called with the sub-questions once the tasks are posted and before the
+    local agents start, which is where a host lets agents on other machines in.
+    """
 
     async def stage(researcher: Researcher, state: dict, over: Callable[[], bool]) -> dict:
-        board = Board(board_path)
+        board = Board(board_path, lease_seconds=settings.team_lease_minutes * 60)
         try:
             board.start(len(state["questions"]))
+            if before_work:
+                await before_work(state["questions"])
             agents = [f"agent-{number}" for number in range(1, settings.team_agents + 1)]
             async with asyncio.TaskGroup() as group:
                 for agent in agents:

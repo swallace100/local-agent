@@ -45,6 +45,8 @@ class Settings:
     team_max_steps: int = 120
     # How many agents may try a question that keeps turning up nothing.
     team_attempts: int = 2
+    # A task is given to someone else if its agent hasn't finished it in this long.
+    team_lease_minutes: int = 15
 
     # The shortest gap between web searches. Search engines block a client that asks too often.
     search_pause_seconds: float = field(default_factory=lambda: float(_env("SEARCH_PAUSE_SECONDS", "2")))
