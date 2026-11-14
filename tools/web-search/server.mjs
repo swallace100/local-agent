@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readPage } from "./page.mjs";
+import { unansweredBy } from "./search.mjs";
 
 const SEARXNG_URL = process.env.SEARXNG_URL ?? "http://127.0.0.1:8888";
 const TIMEOUT_MS = 20_000;
@@ -19,6 +20,10 @@ async function search(query, maxResults) {
     throw new Error(`SearXNG returned HTTP ${response.status}`);
   }
   const body = await response.json();
+  const blocked = unansweredBy(body);
+  if (blocked) {
+    throw Object.assign(new Error(blocked), { blocked: true });
+  }
   return (body.results ?? []).slice(0, maxResults).map((result) => ({
     title: result.title,
     url: result.url,
@@ -79,9 +84,10 @@ server.registerTool(
         : "No results. Try a different query.";
       return { content: [{ type: "text", text }] };
     } catch (error) {
-      const text =
-        `Search failed: ${error.message}. ` +
-        `Is SearXNG running at ${SEARXNG_URL}? Start it with: docker compose up -d`;
+      const text = error.blocked
+        ? error.message
+        : `Search failed: ${error.message}. ` +
+          `Is SearXNG running at ${SEARXNG_URL}? Start it with: docker compose up -d`;
       return { isError: true, content: [{ type: "text", text }] };
     }
   },

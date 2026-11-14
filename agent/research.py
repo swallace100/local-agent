@@ -107,6 +107,7 @@ class ResearchState(TypedDict):
     next_question: int
     notes: list[Note]
     dropped_quotes: int
+    failed_searches: int
     cut_short: bool
     draft: str
     feedback: str
@@ -239,6 +240,18 @@ def evidence_appendix(questions: Sequence[str], notes: Sequence[Note], dropped: 
     return "\n".join(lines)
 
 
+def search_warning(state: dict) -> str | None:
+    """Say so when searches failed, so missing evidence isn't mistaken for there being none."""
+    failed = state.get("failed_searches", 0)
+    if not failed:
+        return None
+    return (
+        f"{failed} web searches failed, so the report may be missing things the web could have "
+        "answered. Search engines block a client that asks too often, and that usually clears "
+        "within an hour."
+    )
+
+
 def unsupported_urls(report: str, task: str, notes: Sequence[Note]) -> list[str]:
     """Return URLs in the report that no note came from."""
     allowed = {_normalize(note["source"]) for note in notes}
@@ -285,6 +298,7 @@ def build_research_graph(
         trace: list[dict] = []
         steps = dropped = sources_read = 0
         ran_out = False
+        failed_searches = 0
 
         async def study(source: str, text: str) -> int:
             """Ask the model for evidence in one source, and keep what the source really says."""
@@ -306,10 +320,11 @@ def build_research_graph(
             return kept
 
         async def search_and_read(query: str) -> None:
-            nonlocal steps, ran_out
+            nonlocal steps, ran_out, failed_searches
             try:
                 listing = await use("web_search", query=query, max_results=settings.search_results)
             except ToolException as error:
+                failed_searches += 1
                 trace.append({"step": "search", "query": query, "error": str(error)})
                 return
             listing, urls = usable_results(listing)
@@ -351,7 +366,8 @@ def build_research_graph(
                 await study(source, text)
         if has_web:
             await search_and_read(question)
-            if not notes and not ran_out and not out_of_budget(state, steps):
+            # A search that failed outright won't be helped by different words.
+            if not notes and not ran_out and not failed_searches and not out_of_budget(state, steps):
                 steps += 1
                 query = (await ask(REPHRASE_PROMPT, question)).splitlines()[0].strip('"')
                 await search_and_read(query)
@@ -360,6 +376,7 @@ def build_research_graph(
             "notes": state["notes"] + notes,
             "dropped_quotes": state["dropped_quotes"] + dropped,
             "next_question": index + 1,
+            "failed_searches": state.get("failed_searches", 0) + failed_searches,
             "cut_short": ran_out or (index + 1 < len(state["questions"]) and out_of_budget(state, steps)),
             "steps": state["steps"] + steps,
             "activity": f"question {index + 1} of {len(state['questions'])}: "
@@ -372,7 +389,12 @@ def build_research_graph(
             return {
                 "report": NOTHING_FOUND,
                 "status": "budget_exhausted" if state["cut_short"] else "done_with_warnings",
-                "warnings": [OUT_OF_BUDGET if state["cut_short"] else "None of the sources read had evidence for this task."],
+                "warnings": [
+                    OUT_OF_BUDGET
+                    if state["cut_short"]
+                    else search_warning(state)
+                    or "None of the sources read had evidence for this task."
+                ],
                 "activity": "nothing found",
                 "trace": [],
             }
@@ -424,9 +446,11 @@ def build_research_graph(
                 "trace": [{"step": "review", "issues": issues}],
             }
         warnings = list(issues)
+        if search_warning(state):
+            warnings.insert(0, search_warning(state))
         if cut_short:
             warnings.insert(0, OUT_OF_BUDGET)
-        status = "budget_exhausted" if cut_short else "done_with_warnings" if issues else "done"
+        status = "budget_exhausted" if cut_short else "done_with_warnings" if warnings else "done"
         appendix = evidence_appendix(state["questions"], notes, state["dropped_quotes"])
         return {
             "report": f"{draft}\n\n{appendix}",
@@ -468,6 +492,7 @@ def initial_research_state(task: str) -> dict:
         "next_question": 0,
         "notes": [],
         "dropped_quotes": 0,
+        "failed_searches": 0,
         "cut_short": False,
         "draft": "",
         "feedback": "",

@@ -178,6 +178,12 @@ def command_tool(settings: Settings, workspace: Path) -> BaseTool:
     return run_command
 
 
+def source_label(document) -> str:
+    """How a knowledge chunk is cited: its file, and its page when the file has pages."""
+    page = document.metadata.get("page")
+    return f"knowledge/{document.metadata['source']}" + (f", page {page}" if page else "")
+
+
 def knowledge_tool(knowledge: Knowledge) -> BaseTool:
     @tool
     async def knowledge_search(query: str) -> str:
@@ -186,9 +192,7 @@ def knowledge_tool(knowledge: Knowledge) -> BaseTool:
         results = await asyncio.to_thread(knowledge.search, query)
         if not results:
             return "Nothing relevant in the knowledge folder."
-        return "\n\n".join(
-            f"Source: knowledge/{doc.metadata['source']}\n{doc.page_content}" for doc, _ in results
-        )
+        return "\n\n".join(f"Source: {source_label(doc)}\n{doc.page_content}" for doc, _ in results)
 
     return knowledge_search
 

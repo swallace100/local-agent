@@ -131,6 +131,32 @@ async def test_time_limit_stops_reading_and_says_so():
     assert "limit" in state["warnings"][0]
 
 
+async def test_a_failed_search_is_reported_instead_of_looking_like_no_evidence():
+    searches = []
+
+    @tool
+    async def web_search(query: str, max_results: int = 5) -> str:
+        """Search."""
+        searches.append(query)
+        if "Ruby" in query:
+            raise ToolException("Web search is unavailable: every search engine refused the request")
+        return "1. Title\nURL: https://a.org/sqlite\nSnippet"
+
+    @tool
+    async def web_read_page(url: str, offset: int = 0) -> str:
+        """Read."""
+        return f"Title: T\nURL: {url}\n\n{PAGES[url]}"
+
+    replies = ["When was SQLite released?\nWho made Ruby?", GOOD_NOTE, "In 2000 (https://a.org/sqlite).", "PASS"]
+    model = ScriptedModel(replies=[AIMessage(r) for r in replies], calls=[])
+    graph = build_research_graph(model, [web_search, web_read_page], SETTINGS)
+    state = await graph.ainvoke(initial_research_state("SQLite and Ruby"))
+    assert searches == ["When was SQLite released?", "Who made Ruby?"], "a failed search isn't reworded and retried"
+    assert state["status"] == "done_with_warnings"
+    assert "1 web searches failed" in state["warnings"][0]
+    assert "Who made Ruby?" in state["report"], "the report lists what it found nothing for"
+
+
 async def test_knowledge_is_used_without_the_web():
     @tool
     async def knowledge_search(query: str) -> str:

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import { unansweredBy } from "./search.mjs";
 import {
   assertPublicUrl,
+  documentKind,
+  docxToText,
   htmlToText,
+  pdfToText,
   isPrivateAddress,
   PAGE_CHARS,
   publicLookup,
@@ -56,6 +61,30 @@ test("a page that is mostly lists keeps its lists", () => {
   assert.match(text, /Version 9\.8\.7/);
   assert.match(text, /Release 3\.59\.0/);
   assert.doesNotMatch(text, /Copyright notice|Home/);
+});
+
+test("pdf and word documents are read as text", async () => {
+  const pdf = await pdfToText(readFileSync(new URL("./fixtures/kestrel-contract.pdf", import.meta.url)));
+  assert.match(pdf.text, /^\[Page 1\]\nKestrel maintenance contract/);
+  assert.match(pdf.text, /\[Page 2\]\n[^]*Ilse Brandt/);
+  const docx = await docxToText(readFileSync(new URL("./fixtures/osprey-onboarding.docx", import.meta.url)));
+  assert.match(docx.text, /laptop of model TX-880/);
+});
+
+test("documents are recognized by type, or by name when sent as a plain download", () => {
+  assert.equal(documentKind("application/pdf; charset=binary", "/a"), "pdf");
+  assert.equal(documentKind("application/octet-stream", "/files/Report.PDF"), "pdf");
+  assert.equal(documentKind("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "/a"), "docx");
+  assert.equal(documentKind("", "/notes.docx"), "docx");
+  assert.equal(documentKind("text/html", "/looks-like.pdf"), null);
+  assert.equal(documentKind("application/zip", "/archive.zip"), null);
+});
+
+test("a search every engine refused is an error, not an empty result", () => {
+  const refused = { results: [], unresponsive_engines: [["brave", "Suspended: too many requests"], ["duckduckgo", "CAPTCHA"]] };
+  assert.match(unansweredBy(refused), /^Web search is unavailable: .*brave: Suspended.*duckduckgo: CAPTCHA/);
+  assert.equal(unansweredBy({ results: [], unresponsive_engines: [] }), null, "a real empty result");
+  assert.equal(unansweredBy({ results: [{ url: "https://a.org" }], unresponsive_engines: [["brave", "timeout"]] }), null);
 });
 
 test("long text is split with a continuation note", () => {
