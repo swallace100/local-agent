@@ -14,6 +14,7 @@ from agent.graph import (
     TOOL_OUTPUT_REMOVED,
     build_graph,
     calibrate,
+    longer_file_written,
     estimate_tokens,
     fit_context,
     initial_state,
@@ -249,6 +250,59 @@ async def test_handing_in_a_missing_file_keeps_the_agent_working():
     )
     assert state["status"] == "done"
     assert state["report"] == "The answer, in full"
+
+
+async def test_describing_a_saved_file_instead_of_handing_it_in_forces_a_revision():
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write."""
+        return "Wrote it"
+
+    document = "# Full document\n\nEvery line of it."
+    replies = [
+        AIMessage("plan"),
+        call("write_file", {"path": "result.md", "content": "x" * 500}, "1"),
+        AIMessage("I've written the quiz you asked for."),
+        call("finish_with_file", {"path": "result.md"}, "2"),
+        AIMessage("PASS"),
+    ]
+    model = ScriptedModel(replies=replies, calls=[])
+    graph = build_graph(model, [write_file, finish_with_file], SETTINGS, files_are_the_result=True)
+    state = await graph.ainvoke(initial_state("Write a quiz"), {"recursion_limit": 200})
+    assert state["status"] == "done"
+    assert state["revisions"] == 1
+    assert state["report"] == document
+    assert any("finish_with_file" in str(m.content) for m in state["messages"] if isinstance(m, HumanMessage))
+
+
+async def test_a_file_that_was_only_working_notes_is_asked_about_once():
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write."""
+        return "Wrote it"
+
+    replies = [
+        AIMessage("plan"),
+        call("write_file", {"path": "scratch.md", "content": "x" * 500}, "1"),
+        AIMessage("The answer is 42."),
+        AIMessage("The answer is 42."),
+        AIMessage("PASS"),
+    ]
+    model = ScriptedModel(replies=replies, calls=[])
+    graph = build_graph(model, [write_file, finish_with_file], SETTINGS, files_are_the_result=True)
+    state = await graph.ainvoke(initial_state("What is the answer?"), {"recursion_limit": 200})
+    assert state["status"] == "done" and state["revisions"] == 1
+    assert state["report"] == "The answer is 42."
+
+
+def test_only_a_file_longer_than_the_reply_raises_the_question():
+    wrote = [
+        call("write_file", {"path": "a.md", "content": "x" * 100}, "1"),
+        call("write_file", {"path": "notes/b.md", "content": "x" * 900}, "2"),
+    ]
+    assert longer_file_written(wrote, "I've created the quiz.") == "notes/b.md"
+    assert longer_file_written(wrote, "The full answer. " * 100) is None
+    assert longer_file_written([], "Short") is None
 
 
 async def test_reviewer_is_told_which_files_were_written():

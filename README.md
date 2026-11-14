@@ -57,6 +57,7 @@ With `--project`, the agent works on a copy of your folder and never changes the
 | Command                | What it does                                                       |
 | ---------------------- | ------------------------------------------------------------------ |
 | `agent research "question"` | Research a question and write a cited report (see [How research works](#how-research-works)) |
+| `agent team "question"` | Research with several agents that share notes and cross-check each other (see [Research as a team](#research-as-a-team)) |
 | `agent organize <folder> "instruction"` | Plan how to tidy a folder, without moving anything (see [Organizing a folder](#organizing-a-folder)) |
 | `agent apply <id>`, `agent undo <id>` | Carry out an organize plan, or reverse it |
 | `agent runs`           | List runs and their status                                         |
@@ -104,6 +105,8 @@ A research run takes about 2 to 4 minutes for a question with four parts.
 
 Search engines block a client that asks too often, usually for under an hour. Four engines are used so that one being blocked doesn't matter. If all of them refuse, the report says how many searches failed instead of claiming there was no evidence. Many research runs in a row are the usual cause, so space out large batches.
 
+To stay under those limits, the agent waits at least 2 seconds between searches. Set `AGENT_SEARCH_PAUSE_SECONDS` to change that.
+
 ### Tools
 
 | Tool                                                 | What it does                                          |
@@ -113,6 +116,26 @@ Search engines block a client that asks too often, usually for under an hour. Fo
 | `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only           |
 | `finish_with_file`                                   | Hands in a workspace file as the final result         |
 | `run_command`                                        | Runs a command in the sandbox (see [Safety](#safety)) |
+
+### Research as a team
+
+`agent team` runs the same research with two or more agents that share a board of tasks and notes.
+
+```powershell
+.venv\Scripts\agent team "Compare SQLite and DuckDB for local analytics"
+.venv\Scripts\agent team "Compare SQLite and DuckDB for local analytics" --agents 3
+```
+
+- **Shared tasks:** each sub-question goes on the board, and only one agent can claim it.
+- **Shared notes:** an agent sees which pages the others have read and looks elsewhere.
+- **Handing over:** an agent that finds nothing rewords the question and leaves it for another agent.
+- **Cross-checking:** once a question is answered, a different agent looks for the answer again on websites the first one didn't use. The two sets of notes are compared and marked AGREE, DISAGREE, UNCLEAR, or UNCONFIRMED when no second source turned up.
+
+The report shows which agent found each quote and ends with the cross-checks. An answer two agents reached from different websites is worth more than one found once, and a DISAGREE tells you where to look yourself.
+
+The agents take turns on your one GPU, so a team is not faster. A four-part question takes about 3 minutes, against about 2 for `agent research`, and makes roughly twice as many searches. Use it when you want the second opinion. The comparison is made by the model, so it can be wrong: in testing it once marked "2019" and "27 June 2019" as a disagreement.
+
+The board is saved as `board.sqlite` in the run's folder.
 
 ### Organizing a folder
 
@@ -234,7 +257,9 @@ In both agents, search queries and page requests reach the internet, though the 
 
 ## Improving it
 
-`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. The tasks cover notes, web research, code, long documents, planted instructions, and tidying a folder. Add `"mode": "research"` or `"mode": "organize"` to a task to run it with that command. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
+`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. The tasks cover notes, web research, code, long documents, planted instructions, and tidying a folder. Add `"mode": "research"`, `"mode": "team"` or `"mode": "organize"` to a task to run it with that command.
+
+Evals search the web far more than normal use, so they wait 15 seconds between searches. That adds several minutes to a full run. `agent eval --no-web` skips the tasks that search, which is the right choice when your change has nothing to do with the web. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
 
 A good way to improve the agent over time:
 
@@ -250,6 +275,7 @@ Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted mod
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py)                                                                                         |
 | Research runs: prompts and workflow    | [agent/research.py](agent/research.py)                                                                                   |
+| Team runs: the board and the agents    | [agent/team.py](agent/team.py)                                                                                           |
 | Organize runs: prompts and rules       | [agent/organize.py](agent/organize.py)                                                                                   |
 | Unattended agent: limits and models    | [agent/config.py](agent/config.py), or `AGENT_*` environment variables                                                   |
 | Interactive agent: permissions         | [opencode.jsonc](opencode.jsonc)                                                                                         |

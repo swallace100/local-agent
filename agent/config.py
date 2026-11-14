@@ -40,6 +40,15 @@ class Settings:
     research_sections_per_page: int = 2
     facts_per_source: int = 4
 
+    # Team runs (agent team). Each answer is looked up twice, so they get more steps.
+    team_agents: int = 2
+    team_max_steps: int = 120
+    # How many agents may try a question that keeps turning up nothing.
+    team_attempts: int = 2
+
+    # The shortest gap between web searches. Search engines block a client that asks too often.
+    search_pause_seconds: float = field(default_factory=lambda: float(_env("SEARCH_PAUSE_SECONDS", "2")))
+
     # Organize runs (agent organize).
     organize_max_files: int = 2_000
     organize_batch: int = 25

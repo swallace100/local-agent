@@ -68,6 +68,7 @@ MIN_CHARS_PER_TOKEN, MAX_CHARS_PER_TOKEN = 1.5, 4.5
 # Below this many tokens of conversation, a measurement is too noisy to adjust from.
 MIN_TOKENS_TO_CALIBRATE = 500
 FINISH_TOOL = "finish_with_file"
+HAND_IN_REMINDER = "The user reads only your reply, not the files you wrote."
 FILE_WRITING_TOOLS = ("write_file", "edit_file")
 KEEP_RECENT_TOOL_OUTPUTS = 3
 EVIDENCE_CHARS = 1_500
@@ -220,6 +221,22 @@ def strip_narration(report: str) -> str:
     return re.sub(r"^(\s*(-{3,}|\*{3,})\s*\n)+", "", rest).lstrip()
 
 
+def longer_file_written(messages: Sequence[AnyMessage], reply: str) -> str | None:
+    """Return the largest file the agent wrote, if it is longer than the reply.
+
+    That is the sign of a reply such as "I've created the quiz", which leaves the person
+    with a description of the result instead of the result.
+    """
+    written: dict[str, int] = {}
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                if call["name"] == "write_file":
+                    written[str(call["args"].get("path"))] = len(str(call["args"].get("content", "")))
+    path = max(written, key=written.get, default=None)
+    return path if path and written[path] > len(reply) else None
+
+
 def _evidence(messages: Sequence[AnyMessage]) -> str:
     """Summarize what the agent did, so the reviewer judges more than the agent's own claims."""
     tools_used = [m.name for m in messages if isinstance(m, ToolMessage)]
@@ -263,7 +280,10 @@ def build_graph(
     settings: Settings,
     checkpointer=None,
     work_prompt: str = WORK_PROMPT,
+    files_are_the_result: bool = False,
 ):
+    """Build the graph. Set files_are_the_result when the workspace starts empty, so a file the
+    agent writes is its answer and not a change to a project that will be returned as a patch."""
     model_with_tools = model.bind_tools(tools)
     model_retry = RetryPolicy(max_attempts=3, initial_interval=5.0)
 
@@ -303,6 +323,16 @@ def build_graph(
         file_result = handed_in_file(state["messages"])
         report = (_text(state["messages"][-1]) if file_result is None else file_result).strip()
         issues = []
+        # Asked once only. The file may be working notes, with the reply the real result.
+        already_asked = any(HAND_IN_REMINDER in _text(m) for m in state["messages"])
+        if files_are_the_result and file_result is None and not already_asked:
+            longer_file = longer_file_written(state["messages"], report)
+            if longer_file:
+                issues.append(
+                    f"You saved {longer_file}, which is longer than your reply. {HAND_IN_REMINDER} "
+                    f"If that file is the result, call finish_with_file with its path. If your "
+                    "reply was already the complete result, send it again."
+                )
         if not report:
             issues.append(EMPTY_REPLY)
         unread = unread_citations(report, state["task"], state["messages"])

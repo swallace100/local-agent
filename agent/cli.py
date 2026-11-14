@@ -1,4 +1,4 @@
-"""Command line: agent run | research | organize | apply | undo | resume | runs | index | search | eval | moltbook"""
+"""Command line: agent run | research | team | organize | apply | undo | resume | runs | index | search | eval | moltbook"""
 
 import argparse
 import asyncio
@@ -69,6 +69,14 @@ def main() -> None:
     research.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     research.add_argument("--max-minutes", type=int, help="Time limit for this run")
 
+    team = commands.add_parser(
+        "team", help="Research a question with several agents that share notes and cross-check each other"
+    )
+    team.add_argument("task")
+    team.add_argument("--agents", type=int, help="How many agents work on it (default 2)")
+    team.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
+    team.add_argument("--max-minutes", type=int, help="Time limit for this run")
+
     organize = commands.add_parser(
         "organize", help="Plan how to tidy a folder into subfolders, without moving anything"
     )
@@ -93,6 +101,7 @@ def main() -> None:
 
     evaluate = commands.add_parser("eval", help="Score the agent on the tasks in evals/tasks.json")
     evaluate.add_argument("--only", help="Run a single eval by ID")
+    evaluate.add_argument("--no-web", action="store_true", help="Skip the tasks that search the web")
 
     moltbook = commands.add_parser("moltbook", help="Write a read-only digest of Moltbook")
     moltbook.add_argument("--topic", help="Focus the digest on one subject")
@@ -100,7 +109,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = Settings()
 
-    if args.command in ("run", "research", "organize") and args.max_minutes:
+    if args.command in ("run", "research", "team", "organize") and args.max_minutes:
         settings = replace(settings, max_minutes=args.max_minutes)
 
     if args.command == "run":
@@ -109,6 +118,12 @@ def main() -> None:
         _print_result(asyncio.run(start_run(settings, args.task, args.project, not args.no_web)))
     elif args.command == "research":
         _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="research")))
+    elif args.command == "team":
+        if args.agents is not None:
+            if args.agents < 2:
+                raise SystemExit("A team needs at least 2 agents. For one agent, use: agent research")
+            settings = replace(settings, team_agents=args.agents)
+        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="team")))
     elif args.command == "organize":
         folder = args.folder.resolve()
         if not folder.is_dir():
@@ -147,7 +162,7 @@ def main() -> None:
     elif args.command == "eval":
         from agent.evals import run_evals
 
-        raise SystemExit(asyncio.run(run_evals(settings, args.only)))
+        raise SystemExit(asyncio.run(run_evals(settings, args.only, skip_web=args.no_web)))
 
 
 if __name__ == "__main__":
