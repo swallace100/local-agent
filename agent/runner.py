@@ -1,7 +1,9 @@
 """Starts and resumes runs, and saves their results to runs/<id>/."""
 
+import asyncio
 import json
 import shutil
+import socket
 import subprocess
 import time
 import urllib.request
@@ -22,8 +24,9 @@ from agent.moltbook import WORK_PROMPT as MOLTBOOK_WORK_PROMPT
 from agent.moltbook import add_plug_section, moltbook_tools
 from agent.organize import build_organize_graph, initial_organize_state, save_moves
 from agent.rag import Knowledge
-from agent.research import build_research_graph, initial_research_state
-from agent.team import team_stage
+from agent.remote import BoardGone, BoardServer, RemoteBoard
+from agent.research import Researcher, build_research_graph, initial_research_state
+from agent.team import _work, team_stage
 from agent.tools import command_tool, file_tools, knowledge_tool, web_tools
 
 # Never copied into a run, so the agent can't read secrets or a repo's git config.
@@ -68,7 +71,13 @@ def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
 
 
 def _new_run(
-    settings: Settings, task: str, project: Path | None, use_web: bool, mode: str, folder: Path | None = None
+    settings: Settings,
+    task: str,
+    project: Path | None,
+    use_web: bool,
+    mode: str,
+    folder: Path | None = None,
+    host: dict | None = None,
 ) -> Path:
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     run_dir = settings.runs_dir / run_id
@@ -84,6 +93,7 @@ def _new_run(
         "use_web": use_web,
         "mode": mode,
         "folder": str(folder) if folder else None,
+        "host": host,
         "created": datetime.now().isoformat(timespec="seconds"),
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -173,6 +183,69 @@ def _log(trace_file, node: str, update: dict | None) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {node}" + (f": {detail}" if detail else ""), flush=True)
 
 
+class _open_to_joiners:
+    """Called by a team once its tasks are posted: serves the board and waits for joiners."""
+
+    def __init__(self, settings: Settings, run_dir: Path, host: dict, tools: list):
+        self.settings, self.run_dir, self.host = settings, run_dir, host
+        read_tool = next(tool for tool in tools if tool.name == "web_read_page")
+        self.read_page = read_tool.metadata["read_unmetered"]
+        self.server: BoardServer | None = None
+
+    async def __call__(self, questions: list[str]) -> None:
+        if self.server:  # The step is being retried, and the board is already being served.
+            return
+        self.server = BoardServer(
+            self.run_dir / "board.sqlite",
+            questions,
+            self.read_page,
+            asyncio.get_running_loop(),
+            lease_seconds=self.settings.team_lease_minutes * 60,
+            max_attempts=self.settings.team_attempts,
+            listen=self.host["listen"],
+            port=self.host["port"],
+        )
+        address = f"http://{_this_machine()}:{self.server.port}"
+        print(f"\nOther machines can join this run with:\n  agent join {address} --key {self.server.key}\n", flush=True)
+        waiting_for, deadline = self.host.get("wait_for", 0), time.time() + self.host.get("wait_seconds", 0)
+        while len(self.server.joined) < waiting_for and time.time() < deadline:
+            await asyncio.sleep(1)
+        if waiting_for:
+            print(f"{len(self.server.joined)} joined. Starting.", flush=True)
+
+
+def _this_machine() -> str:
+    """This machine's address on the local network, for the joining instructions."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 80))  # Nothing is sent. It only picks the outgoing interface.
+            return probe.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+async def join_team(settings: Settings, url: str, key: str, name: str) -> None:
+    """Work on another machine's team run, using this machine's model and web access."""
+    preflight(settings, need_web=True, need_docker=False)
+    board = RemoteBoard(url, key, name)
+    try:
+        questions = board.questions()
+        print(f"Joined as {board.name}. {len(questions)} questions on the board.", flush=True)
+        started = time.time()
+        async with web_tools(settings) as web:
+            researcher = Researcher(make_model(settings), web, settings)
+
+            def over() -> bool:
+                return (time.time() - started) / 60 >= settings.max_minutes or researcher.steps >= settings.team_max_steps
+
+            await _work(board.name, board, researcher, questions, over, settings)
+        print("Nothing left to do. Leaving.")
+    except BoardGone as gone:
+        print(f"Stopped: {gone}")
+    finally:
+        board.close()
+
+
 async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=None) -> RunResult:
     meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     mode = _mode(meta)
@@ -206,7 +279,9 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
                 graph = build_organize_graph(model, settings, checkpointer=saver)
             elif mode in RESEARCH_MODES:
                 # A team shares one board, kept with the run so a resumed run carries on from it.
-                team = team_stage(run_dir / "board.sqlite", settings) if mode == "team" else None
+                hosting = _open_to_joiners(settings, run_dir, meta["host"], all_tools) if meta.get("host") else None
+                servers.append(hosting)
+                team = team_stage(run_dir / "board.sqlite", settings, hosting) if mode == "team" else None
                 leads = partial(memory.leads, limit=settings.pages_per_question) if memory else None
                 graph = build_research_graph(
                     model, all_tools, settings, checkpointer=saver, team=team, leads=leads
@@ -229,11 +304,17 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
                         _log(trace, node, update)
             return (await graph.aget_state(config)).values
 
-        if meta["use_web"]:
-            async with web_tools(settings) as web:
-                state = await run_graph([*tools, *web])
-        else:
-            state = await run_graph(tools)
+        servers: list = []
+        try:
+            if meta["use_web"]:
+                async with web_tools(settings) as web:
+                    state = await run_graph([*tools, *web])
+            else:
+                state = await run_graph(tools)
+        finally:
+            for hosting in servers:
+                if hosting and hosting.server:
+                    hosting.server.close()
 
     if mode == "moltbook":
         state["report"] = add_plug_section(strip_narration(state.get("report", "")), state["messages"])
@@ -255,13 +336,15 @@ async def start_run(
     mode: str = "agent",
     folder: Path | None = None,
     on_start: Callable[[str], None] | None = None,
+    host: dict | None = None,
 ) -> RunResult:
     """Start a run. mode is "agent" (tools and a sandbox), "research", "team", "organize" or "moltbook".
 
     folder is the real folder an organize run plans for. The run reads it but never changes it.
     on_start is told the run's ID as soon as it exists, so an interrupted run can be found again.
+    host, for a team run, opens the board to agents on other machines (see agent/remote.py).
     """
-    run_dir = _new_run(settings, task, project, use_web, mode, folder)
+    run_dir = _new_run(settings, task, project, use_web, mode, folder, host)
     print(f"Run {run_dir.name}", flush=True)
     if on_start:
         on_start(run_dir.name)

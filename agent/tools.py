@@ -267,5 +267,11 @@ async def web_tools(settings: Settings) -> AsyncIterator[list[BaseTool]]:
 
         yield [
             StructuredTool.from_function(coroutine=web_search, handle_tool_error=True),
-            StructuredTool.from_function(coroutine=web_read_page, handle_tool_error=True),
+            StructuredTool.from_function(
+                coroutine=web_read_page,
+                handle_tool_error=True,
+                # For code that checks another machine's notes. It isn't the agent reading, so
+                # it doesn't count against the agent's allowance for the page.
+                metadata={"read_unmetered": lambda url, offset=0: call("read_page", {"url": url, "offset": offset})},
+            ),
         ]

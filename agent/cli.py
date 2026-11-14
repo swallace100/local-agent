@@ -1,9 +1,10 @@
-"""Command line: agent run | research | team | organize | apply | undo | queue | recall | resume | runs | index | search
+"""Command line: agent run | research | team | join | organize | apply | undo | queue | recall | resume | runs | index | search
 | eval | moltbook"""
 
 import argparse
 import asyncio
 import json
+import socket
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -25,7 +26,8 @@ from agent.moltbook_auto import (
     schedule_checkins,
     unschedule_checkins,
 )
-from agent.runner import make_model, preflight, resume_run, start_run
+from agent.remote import DEFAULT_PORT
+from agent.runner import join_team, make_model, preflight, resume_run, start_run
 from agent.tools import source_label
 
 
@@ -229,6 +231,15 @@ def main() -> None:
     team.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     team.add_argument("--max-minutes", type=int, help="Time limit for this run")
     team.add_argument("--no-memory", action="store_true", help="Don't use or add to what earlier runs found")
+    team.add_argument("--host", action="store_true", help="Let agents on other machines join this run")
+    team.add_argument("--port", type=int, default=DEFAULT_PORT, help="With --host: the port to listen on")
+    team.add_argument("--wait-for", type=int, default=0, metavar="N", help="With --host: wait for N machines to join")
+
+    join = commands.add_parser("join", help="Join a team run hosted on another machine")
+    join.add_argument("url", help="The address the host printed, such as http://192.168.1.20:8765")
+    join.add_argument("--key", required=True, help="The key the host printed")
+    join.add_argument("--name", default=socket.gethostname(), help="What to call this machine's agent")
+    join.add_argument("--max-minutes", type=int, help="How long to keep working")
 
     organize = commands.add_parser(
         "organize", help="Plan how to tidy a folder into subfolders, without moving anything"
@@ -316,7 +327,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = Settings()
 
-    if args.command in ("run", "research", "team", "organize") and args.max_minutes:
+    if args.command in ("run", "research", "team", "organize", "join") and args.max_minutes:
         settings = replace(settings, max_minutes=args.max_minutes)
 
     if getattr(args, "no_memory", False):
@@ -330,10 +341,18 @@ def main() -> None:
         _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="research")))
     elif args.command == "team":
         if args.agents is not None:
-            if args.agents < 2:
+            if args.agents < (1 if args.host else 2):
                 raise SystemExit("A team needs at least 2 agents. For one agent, use: agent research")
             settings = replace(settings, team_agents=args.agents)
-        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="team")))
+        host = None
+        if args.host:
+            if args.no_web:
+                raise SystemExit("Hosting needs the web, because the host checks joiners' notes against the pages.")
+            # Up to five minutes for the others to join, when asked to wait for them.
+            host = {"listen": "0.0.0.0", "port": args.port, "wait_for": args.wait_for, "wait_seconds": 300}
+        _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="team", host=host)))
+    elif args.command == "join":
+        asyncio.run(join_team(settings, args.url, args.key, args.name))
     elif args.command == "organize":
         folder = args.folder.resolve()
         if not folder.is_dir():

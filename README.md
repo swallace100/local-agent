@@ -139,6 +139,38 @@ The agents take turns on your one GPU, so a team is not faster. A four-part ques
 
 The board is saved as `board.sqlite` in the run's folder.
 
+### A team across machines
+
+Agents on other computers can join a team run. Each one uses its own model, GPU and web access, so unlike a team on one machine, this one works in parallel.
+
+On the machine that starts the run:
+
+```powershell
+.venv\Scripts\agent team "Compare SQLite and DuckDB for local analytics" --host --wait-for 1
+```
+
+It prints a line like `agent join http://192.168.1.20:8765 --key ...`. Run that on the other machine, which needs this project set up too:
+
+```powershell
+.venv\Scripts\agent join http://192.168.1.20:8765 --key <key>
+```
+
+- `--wait-for 1` holds the run for up to five minutes until one machine has joined. Without it the host starts straight away and others can join while tasks remain.
+- `--agents 1` gives the host a single agent of its own, leaving more of the work to the others.
+- Windows will ask once whether to let Python accept connections. The key is new for every run.
+
+The host trusts a joining agent less than its own, and enforces that in code:
+
+- A joiner's note is kept only if the host opens the page itself and finds the quote there. A joiner can't put words on the board that no page says.
+- Your notes in `knowledge/` never leave the host. Joiners see the sub-questions and the notes that came from web pages.
+- A joiner is always labelled `remote-<name>`, can only finish tasks it holds, and can't cross-check its own answers.
+- If a joiner disappears, its task is given to someone else after 15 minutes.
+
+Two limits to know:
+
+- The connection is plain HTTP, so use it only on a network you trust, such as your home network or a private VPN. Don't open the port to the internet.
+- Whoever joins sees your question's sub-questions. Don't host a run about something private.
+
 ### Organizing a folder
 
 `agent organize` sorts the loose files in a real folder into subfolders. It works in two stages, and only the second one moves anything.
