@@ -1,4 +1,4 @@
-"""Command line: agent run | research | resume | runs | index | search | eval | moltbook"""
+"""Command line: agent run | research | organize | apply | undo | resume | runs | index | search | eval | moltbook"""
 
 import argparse
 import asyncio
@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent.config import Settings
 from agent.moltbook import digest_task
+from agent.organize import DEFAULT_INSTRUCTION, MOVES_FILE, apply_moves, scan, undo_moves, why_not
 from agent.rag import Knowledge
 from agent.runner import resume_run, start_run
 
@@ -15,6 +16,8 @@ from agent.runner import resume_run, start_run
 def _print_result(result) -> None:
     print(f"\nStatus: {result.status}")
     print(f"Report: {result.run_dir / 'report.md'}")
+    if (result.run_dir / MOVES_FILE).exists():
+        print(f"Nothing has been moved. Read the plan, then apply it with: agent apply {result.run_id}")
     patch = result.run_dir / "changes.patch"
     if patch.exists():
         print(f"Code changes: {patch}")
@@ -36,6 +39,18 @@ def _list_runs(settings: Settings) -> None:
         print(f"{run_dir.name}  {status:<20} {task[:70]}")
 
 
+def _print_moves(settings: Settings, run_id: str, action, done: str) -> None:
+    run_dir = settings.runs_dir / run_id
+    if not run_dir.is_dir():
+        raise SystemExit(f"No such run: {run_id}")
+    result = action(run_dir)
+    print(f"{done} {result.moved} files.")
+    if result.skipped:
+        print(f"Skipped {len(result.skipped)}:")
+        for reason in result.skipped:
+            print(f"  {reason}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent", description="Unattended local agent")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -52,6 +67,19 @@ def main() -> None:
     research.add_argument("task")
     research.add_argument("--no-web", action="store_true", help="Use only your notes in knowledge/")
     research.add_argument("--max-minutes", type=int, help="Time limit for this run")
+
+    organize = commands.add_parser(
+        "organize", help="Plan how to tidy a folder into subfolders, without moving anything"
+    )
+    organize.add_argument("folder", type=Path)
+    organize.add_argument("instruction", nargs="?", default=DEFAULT_INSTRUCTION)
+    organize.add_argument("--max-minutes", type=int, help="Time limit for this run")
+
+    apply = commands.add_parser("apply", help="Move the files as an organize run planned")
+    apply.add_argument("run_id")
+
+    undo = commands.add_parser("undo", help="Put back the files that apply moved")
+    undo.add_argument("run_id")
 
     resume = commands.add_parser("resume", help="Continue an interrupted run")
     resume.add_argument("run_id")
@@ -71,7 +99,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = Settings()
 
-    if args.command in ("run", "research") and args.max_minutes:
+    if args.command in ("run", "research", "organize") and args.max_minutes:
         settings = replace(settings, max_minutes=args.max_minutes)
 
     if args.command == "run":
@@ -80,6 +108,22 @@ def main() -> None:
         _print_result(asyncio.run(start_run(settings, args.task, args.project, not args.no_web)))
     elif args.command == "research":
         _print_result(asyncio.run(start_run(settings, args.task, use_web=not args.no_web, mode="research")))
+    elif args.command == "organize":
+        folder = args.folder.resolve()
+        if not folder.is_dir():
+            raise SystemExit(f"No such folder: {args.folder}")
+        if why_not(folder):
+            raise SystemExit(why_not(folder))
+        if not scan(folder, 1)[0]:
+            raise SystemExit(f"There are no loose files in {folder} to organize.")
+        _print_result(
+            asyncio.run(start_run(settings, args.instruction, use_web=False, mode="organize", folder=folder))
+        )
+    elif args.command == "apply":
+        _print_moves(settings, args.run_id, apply_moves, "Moved")
+        print(f"To reverse this, run: agent undo {args.run_id}")
+    elif args.command == "undo":
+        _print_moves(settings, args.run_id, undo_moves, "Put back")
     elif args.command == "moltbook":
         _print_result(asyncio.run(start_run(settings, digest_task(args.topic), use_web=False, mode="moltbook")))
     elif args.command == "resume":

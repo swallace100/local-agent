@@ -35,9 +35,10 @@ Run these from this folder:
 .venv\Scripts\agent research "Summarize my notes on Heron" --no-web
 .venv\Scripts\agent run "Fix the failing tests" --project C:\code\my-app
 .venv\Scripts\agent run "Write a packing list for a three-day hike" --no-web
+.venv\Scripts\agent organize C:\Users\me\Downloads
 ```
 
-Use `agent research` for questions answered from the web or your notes. Use `agent run` for everything else: code, files, and writing.
+Use `agent research` for questions answered from the web or your notes, and `agent organize` to tidy a folder. Use `agent run` for everything else: code, files, and writing.
 
 Each run gets a folder in `runs/` containing:
 
@@ -56,6 +57,8 @@ With `--project`, the agent works on a copy of your folder and never changes the
 | Command                | What it does                                                       |
 | ---------------------- | ------------------------------------------------------------------ |
 | `agent research "question"` | Research a question and write a cited report (see [How research works](#how-research-works)) |
+| `agent organize <folder> "instruction"` | Plan how to tidy a folder, without moving anything (see [Organizing a folder](#organizing-a-folder)) |
+| `agent apply <id>`, `agent undo <id>` | Carry out an organize plan, or reverse it |
 | `agent runs`           | List runs and their status                                         |
 | `agent resume <id>`    | Continue a run that was interrupted, from its last completed step  |
 | `agent index`          | Update the search index after changing `knowledge/`                |
@@ -108,6 +111,33 @@ A research run takes about 2 to 4 minutes for a question with four parts.
 | `list_files`, `read_file`, `write_file`, `edit_file` | Work with files in the run's workspace only           |
 | `finish_with_file`                                   | Hands in a workspace file as the final result         |
 | `run_command`                                        | Runs a command in the sandbox (see [Safety](#safety)) |
+
+### Organizing a folder
+
+`agent organize` sorts the loose files in a real folder into subfolders. It works in two stages, and only the second one moves anything.
+
+```powershell
+.venv\Scripts\agent organize C:\Users\me\Downloads
+.venv\Scripts\agent organize C:\Users\me\Downloads "Put invoices in Invoices and photos in Photos"
+.venv\Scripts\agent apply <run id>
+.venv\Scripts\agent undo <run id>
+```
+
+1. **Plan:** code lists the files. The model proposes a few subfolders, then says which one each file belongs in. The plan is saved as `report.md` to read and `moves.json` to apply. The folder is not touched.
+2. **Apply:** `agent apply` makes the moves. `agent undo` puts every file back and removes the folders it made.
+
+You can edit `moves.json` before applying it. If you leave out the instruction, the agent sorts files by what they are.
+
+What it will and won't do:
+
+- It only moves files. Nothing here can delete, rename, overwrite or edit a file.
+- It only moves files that sit directly in the folder. Existing subfolders and their contents are left alone, though the agent can move files into them.
+- It skips files whose names start with a dot, symbolic links, and any file that changed after the plan was made.
+- If a file with the same name is already in the destination, the file stays where it is.
+- It refuses a whole drive, your home folder, and code repositories.
+- It reads file names, sizes, dates, and the first line of text files. Everything stays on your machine: this command has no web access.
+
+Sixty files take about 30 seconds to plan. Expect a few debatable choices, such as a manual filed under work documents, so read the plan first.
 
 ### Your notes (RAG)
 
@@ -198,7 +228,7 @@ In both agents, search queries and page requests reach the internet, though the 
 
 ## Improving it
 
-`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. The tasks cover notes, web research, code, long documents, planted instructions, and tidying a folder. Add `"mode": "research"` to a task to run it with `agent research`. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
+`agent eval` runs the tasks in [evals/tasks.json](evals/tasks.json) and checks the results in code. It runs the agent's tests itself rather than trusting the report. The tasks cover notes, web research, code, long documents, planted instructions, and tidying a folder. Add `"mode": "research"` or `"mode": "organize"` to a task to run it with that command. Each result is added to `evals/history.jsonl` with the commit and model, so you can tell whether a change helped.
 
 A good way to improve the agent over time:
 
@@ -214,6 +244,7 @@ Run `.venv\Scripts\python -m pytest` for the unit tests. They use a scripted mod
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Unattended agent: prompts and workflow | [agent/graph.py](agent/graph.py)                                                                                         |
 | Research runs: prompts and workflow    | [agent/research.py](agent/research.py)                                                                                   |
+| Organize runs: prompts and rules       | [agent/organize.py](agent/organize.py)                                                                                   |
 | Unattended agent: limits and models    | [agent/config.py](agent/config.py), or `AGENT_*` environment variables                                                   |
 | Interactive agent: permissions         | [opencode.jsonc](opencode.jsonc)                                                                                         |
 | Interactive agent: modes               | [.opencode/agents/](.opencode/agents/)                                                                                   |

@@ -96,6 +96,33 @@
     ]
   },
   {
+    "id": "organize-plan-named-folders",
+    "mode": "organize",
+    "task": "Put documents (.md and .txt) in docs, images (.png and .jpg) in images, and data files (.csv and .json) in data.",
+    "project": "messy",
+    "use_web": false,
+    "checks": [
+      { "type": "status", "value": "done" },
+      { "type": "command", "command": "test -f docs/report-q3.md && test -f docs/notes.txt" },
+      { "type": "command", "command": "test -f images/photo1.jpg && test -f images/logo.png" },
+      { "type": "command", "command": "test -f data/sales.csv && test -f data/users.json" },
+      { "type": "command", "command": "test $(find . -type f | wc -l) -eq 6 && grep -q 'feb,120' data/sales.csv" }
+    ]
+  },
+  {
+    "id": "organize-plan-open-ended",
+    "mode": "organize",
+    "task": "Sort these files into a small number of clearly named folders by what they are.",
+    "project": "messy",
+    "use_web": false,
+    "checks": [
+      { "type": "status", "value": "done" },
+      { "type": "command", "command": "test $(find . -type f | wc -l) -eq 6 && test $(find . -mindepth 2 -type f | wc -l) -ge 4" },
+      { "type": "command", "command": "test \"$(dirname $(find . -name photo1.jpg))\" = \"$(dirname $(find . -name logo.png))\"" },
+      { "type": "command", "command": "test \"$(dirname $(find . -name photo1.jpg))\" != \"$(dirname $(find . -name sales.csv))\"" }
+    ]
+  },
+  {
     "id": "research-two-databases",
     "mode": "research",
     "task": "In what year were SQLite and DuckDB each first released, and what license does each use?",

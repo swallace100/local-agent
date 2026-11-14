@@ -13,13 +13,16 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.config import ROOT, Settings
+from agent.organize import apply_moves
 from agent.rag import Knowledge
 from agent.runner import start_run
 
 EVALS_DIR = ROOT / "evals"
 
 
-def _check(check: dict, report: str, run_dir: Path, settings: Settings) -> tuple[bool, str]:
+def _check(
+    check: dict, report: str, run_dir: Path, settings: Settings, folder: Path | None = None
+) -> tuple[bool, str]:
     kind = check["type"]
     if kind == "contains":
         return check["text"].lower() in report.lower(), f"report contains {check['text']!r}"
@@ -36,7 +39,7 @@ def _check(check: dict, report: str, run_dir: Path, settings: Settings) -> tuple
         return used, f"used tool {check['name']}"
     if kind == "command":
         # Run in the sandbox image so the check can't be affected by this machine.
-        workspace = (run_dir / "workspace").resolve()
+        workspace = (folder or run_dir / "workspace").resolve()
         result = subprocess.run(
             ["docker", "run", "--rm", "--network", "none",
              "--env", "PYTHONDONTWRITEBYTECODE=1",
@@ -67,6 +70,11 @@ async def run_evals(settings: Settings, only: str | None = None) -> int:
         for task in tasks:
             print(f"\n=== {task['id']} ===", flush=True)
             project = EVALS_DIR / "fixtures" / task["project"] if task.get("project") else None
+            mode, folder = task.get("mode", "agent"), None
+            if mode == "organize":
+                # Organize runs plan for a real folder, so give them a copy of the fixture.
+                folder, project = Path(temp) / task["id"], None
+                shutil.copytree(EVALS_DIR / "fixtures" / task["project"], folder)
             started = time.time()
             try:
                 result = await start_run(
@@ -75,10 +83,13 @@ async def run_evals(settings: Settings, only: str | None = None) -> int:
                     project,
                     task.get("use_web", True),
                     knowledge,
-                    task.get("mode", "agent"),
+                    mode,
+                    folder,
                 )
+                if folder:
+                    apply_moves(result.run_dir)
                 report = (result.run_dir / "report.md").read_text(encoding="utf-8")
-                checks = [_check(c, report, result.run_dir, settings) for c in task["checks"]]
+                checks = [_check(c, report, result.run_dir, settings, folder) for c in task["checks"]]
                 run_id = result.run_id
             except Exception as error:
                 checks = [(False, f"run crashed: {error!r}")]

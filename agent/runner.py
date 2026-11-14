@@ -17,6 +17,7 @@ from agent.config import Settings
 from agent.graph import WORK_PROMPT, build_graph, initial_state, strip_narration
 from agent.moltbook import WORK_PROMPT as MOLTBOOK_WORK_PROMPT
 from agent.moltbook import add_plug_section, moltbook_tools
+from agent.organize import build_organize_graph, initial_organize_state, save_moves
 from agent.rag import Knowledge
 from agent.research import build_research_graph, initial_research_state
 from agent.tools import command_tool, file_tools, knowledge_tool, web_tools
@@ -56,7 +57,9 @@ def _ignore_for_copy(directory: str, names: list[str]) -> set[str]:
     return ignored
 
 
-def _new_run(settings: Settings, task: str, project: Path | None, use_web: bool, mode: str) -> Path:
+def _new_run(
+    settings: Settings, task: str, project: Path | None, use_web: bool, mode: str, folder: Path | None = None
+) -> Path:
     run_id = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
     run_dir = settings.runs_dir / run_id
     workspace = run_dir / "workspace"
@@ -70,6 +73,7 @@ def _new_run(settings: Settings, task: str, project: Path | None, use_web: bool,
         "project": str(project) if project else None,
         "use_web": use_web,
         "mode": mode,
+        "folder": str(folder) if folder else None,
         "created": datetime.now().isoformat(timespec="seconds"),
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -170,6 +174,9 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     if mode == "moltbook":
         # Bot-written content must never share a run with notes, files or commands.
         tools, work_prompt = moltbook_tools(), MOLTBOOK_WORK_PROMPT
+    elif mode == "organize":
+        # The model only answers questions about a list of files. It gets no tools at all.
+        tools, work_prompt = [], ""
     elif mode == "research":
         # Research reads and reports. It has no files to change and no commands to run.
         tools, work_prompt = [knowledge_tool(knowledge or Knowledge(settings))], ""
@@ -185,7 +192,9 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
     async with AsyncSqliteSaver.from_conn_string(str(settings.checkpoint_db)) as saver:
 
         async def run_graph(all_tools):
-            if mode == "research":
+            if mode == "organize":
+                graph = build_organize_graph(model, settings, checkpointer=saver)
+            elif mode == "research":
                 graph = build_research_graph(model, all_tools, settings, checkpointer=saver)
             else:
                 graph = build_graph(model, all_tools, settings, checkpointer=saver, work_prompt=work_prompt)
@@ -206,6 +215,8 @@ async def _execute(settings: Settings, run_dir: Path, graph_input, *, knowledge=
 
     if mode == "moltbook":
         state["report"] = add_plug_section(strip_narration(state.get("report", "")), state["messages"])
+    if mode == "organize":
+        save_moves(run_dir, state)
     _save_results(run_dir, state, time.time() - started)
     return RunResult(run_dir.name, state.get("status") or "unknown", run_dir)
 
@@ -217,11 +228,20 @@ async def start_run(
     use_web: bool = True,
     knowledge: Knowledge | None = None,
     mode: str = "agent",
+    folder: Path | None = None,
 ) -> RunResult:
-    """Start a run. mode is "agent" (tools and a sandbox), "research" or "moltbook"."""
-    run_dir = _new_run(settings, task, project, use_web, mode)
+    """Start a run. mode is "agent" (tools and a sandbox), "research", "organize" or "moltbook".
+
+    folder is the real folder an organize run plans for. The run reads it but never changes it.
+    """
+    run_dir = _new_run(settings, task, project, use_web, mode, folder)
     print(f"Run {run_dir.name}", flush=True)
-    state = initial_research_state(task) if mode == "research" else initial_state(task)
+    if mode == "organize":
+        state = initial_organize_state(task, folder, settings)
+    elif mode == "research":
+        state = initial_research_state(task)
+    else:
+        state = initial_state(task)
     return await _execute(settings, run_dir, state, knowledge=knowledge)
 
 
