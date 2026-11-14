@@ -79,6 +79,8 @@ async def run_evals(settings: Settings, only: str | None = None, skip_web: bool 
         run_settings = replace(
             settings,
             runs_dir=settings.runs_dir / "evals",
+            # Evals must not learn from each other, or from your own earlier research.
+            remember=False,
             search_pause_seconds=max(settings.search_pause_seconds, EVAL_SEARCH_PAUSE_SECONDS),
         )
 

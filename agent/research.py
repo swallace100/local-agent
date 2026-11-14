@@ -14,6 +14,7 @@ Two things are enforced in code rather than asked of the model:
   therefore can't steer the agent into sending your notes somewhere.
 """
 
+import asyncio
 import re
 import time
 import unicodedata
@@ -304,6 +305,8 @@ class Findings:
     ran_out: bool = False
     # Every web address opened, so another attempt can look elsewhere.
     opened: list[str] = field(default_factory=list)
+    # Pages read again because an earlier run found them useful.
+    revisited: int = 0
 
 
 class Researcher:
@@ -313,8 +316,16 @@ class Researcher:
     rules apply to each: quotes are checked in code, and the model never writes a URL.
     """
 
-    def __init__(self, model: BaseChatModel, tools: Sequence[BaseTool], settings: Settings):
+    def __init__(
+        self,
+        model: BaseChatModel,
+        tools: Sequence[BaseTool],
+        settings: Settings,
+        leads: Callable[[str], list[str]] | None = None,
+    ):
         self.model, self.settings = model, settings
+        # Given a question, returns pages that answered a similar one before (see agent/memory.py).
+        self.leads = leads
         self.by_name = {tool.name: tool for tool in tools}
         self.has_web = "web_search" in self.by_name and "web_read_page" in self.by_name
         self.has_knowledge = "knowledge_search" in self.by_name
@@ -378,23 +389,50 @@ class Researcher:
         for url in (urls[i] for i in order[: settings.pages_per_question + SPARE_PAGES]):
             if pages_read >= settings.pages_per_question or found.ran_out:
                 break
-            offset: int | None = 0
-            for section in range(settings.research_sections_per_page):
-                if offset is None:
-                    break
-                if over():
-                    found.ran_out = True
-                    break
-                try:
-                    page = await self.use("web_read_page", url=url, offset=offset)
-                except ToolException as error:
-                    found.trace.append({"step": "read", "url": url, "error": str(error)})
-                    break
-                pages_read += section == 0
-                final_url, text, offset = parse_page(page, url)
-                found.opened += [address for address in (url, final_url) if address not in found.opened]
-                if await self.study(found, question, index, final_url, text):
-                    break  # Only read further into a page while it has given nothing.
+            pages_read += await self.read(found, question, index, url, over)
+
+    async def read(self, found: Findings, question: str, index: int, url: str, over: Callable[[], bool]) -> bool:
+        """Read one page for evidence, a section at a time. Returns whether the page loaded."""
+        loaded = False
+        offset: int | None = 0
+        for _ in range(self.settings.research_sections_per_page):
+            if offset is None:
+                break
+            if over():
+                found.ran_out = True
+                break
+            try:
+                page = await self.use("web_read_page", url=url, offset=offset)
+            except ToolException as error:
+                found.trace.append({"step": "read", "url": url, "error": str(error)})
+                break
+            loaded = True
+            final_url, text, offset = parse_page(page, url)
+            found.opened += [address for address in (url, final_url) if address not in found.opened]
+            if await self.study(found, question, index, final_url, text):
+                break  # Only read further into a page while it has given nothing.
+        return loaded
+
+    async def revisit(
+        self, found: Findings, question: str, index: int, over: Callable[[], bool], skip: Callable[[str], bool]
+    ) -> bool:
+        """Read again the pages that answered a similar question in an earlier run.
+
+        Returns whether they answered this one. What an earlier run wrote down is never used
+        as evidence. It only says where to look, and the page is read and checked afresh.
+        """
+        if not self.leads:
+            return False
+        remembered = await asyncio.to_thread(self.leads, question)
+        urls = [url for url in remembered if not skip(url)][: self.settings.pages_per_question]
+        found.trace.append({"step": "revisit", "urls": urls})
+        notes_before = len(found.notes)
+        for url in urls:
+            if found.ran_out:
+                break
+            await self.read(found, question, index, url, over)
+        found.revisited += len(urls)
+        return len(found.notes) > notes_before
 
     async def reword(self, question: str) -> str:
         return (await self.ask(REPHRASE_PROMPT, question)).splitlines()[0].strip('"')
@@ -417,8 +455,11 @@ class Researcher:
             listing = await self.use("knowledge_search", query=question)
             for source, text in parse_knowledge(listing).items():
                 await self.study(found, question, index, source, text)
+        if self.has_web and await self.revisit(found, question, index, over, skip):
+            return found  # Known sources answered it, so no search is needed.
         if self.has_web:
-            await self.search_and_read(found, question, index, query or question, over, skip)
+            skip_read = lambda url: skip(url) or url in found.opened  # noqa: E731
+            await self.search_and_read(found, question, index, query or question, over, skip_read)
             # A search that failed outright won't be helped by different words.
             stuck = not found.notes and not found.ran_out and not found.failed_searches
             if stuck and retry_reworded and not over():
@@ -432,13 +473,14 @@ def build_research_graph(
     settings: Settings,
     checkpointer=None,
     team: Callable[["Researcher", dict, Callable[[], bool]], Awaitable[dict]] | None = None,
+    leads: Callable[[str], list[str]] | None = None,
 ):
     """Build the graph. Uses web_search, web_read_page and knowledge_search, whichever are given.
 
     With `team`, the gathering is handed to a group of agents sharing a board (see agent/team.py).
     Splitting the task, writing the report and reviewing it stay the same.
     """
-    researcher = Researcher(model, tools, settings)
+    researcher = Researcher(model, tools, settings, leads)
     ask = researcher.ask
     max_steps = settings.team_max_steps if team else settings.research_max_steps
     model_retry = RetryPolicy(max_attempts=3, initial_interval=5.0)
@@ -475,7 +517,8 @@ def build_research_graph(
             "cut_short": found.ran_out or (more and out_of_budget(state, steps)),
             "steps": state["steps"] + steps,
             "activity": f"question {index + 1} of {len(state['questions'])}: "
-            f"{found.sources_read} sources read, {len(found.notes)} notes kept",
+            f"{found.sources_read} sources read, {len(found.notes)} notes kept"
+            + (f", {found.revisited} pages from earlier runs" if found.revisited else ""),
             "trace": found.trace,
         }
 
