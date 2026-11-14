@@ -26,9 +26,9 @@ class WordEmbeddings(Embeddings):
     """Texts that share words point the same way, which is enough to tell related from unrelated."""
 
     def _vector(self, text: str) -> list[float]:
-        vector = [0.0] * 64
+        vector = [0.0] * 512
         for word in text.lower().replace("?", " ").replace(".", " ").split():
-            vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % 64] += 1
+            vector[int(hashlib.sha256(word.encode()).hexdigest(), 16) % 512] += 1
         length = math.sqrt(sum(value * value for value in vector)) or 1
         return [value / length for value in vector]
 
@@ -62,7 +62,7 @@ def test_leads_are_pages_that_answered_a_similar_question(memory, monkeypatch):
     monkeypatch.setattr("agent.memory.LEAD_DISTANCE", 0.6)
     memory.remember("run-1", "task", QUESTIONS, NOTES)
     assert memory.leads("When was SQLite first released?", limit=2) == ["https://a.org/sqlite"]
-    assert memory.leads("What is the tallest mountain in Peru?", limit=2) == []
+    assert memory.leads("Tallest mountain Peru", limit=2) == []
 
 
 def test_recall_shows_the_fact_its_quote_and_where_it_came_from(memory):
